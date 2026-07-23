@@ -1,0 +1,20 @@
+# === 安全敏感文件 ===
+src/main/resources/config/security.yml
+
+# === IDE ===
+.idea/
+*.iml
+
+# === Build ===
+target/
+*.class
+*.jar
+*.war
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Logs ===
+logs/
+*.log

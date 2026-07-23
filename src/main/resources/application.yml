@@ -1,0 +1,45 @@
+# 主配置文件 —— 仅含应用名和公共导入
+# 各模块配置拆分至：
+#   config/ai.yml        —— DashScope 模型、提示词路径、超时
+#   config/bot.yml       —— 意图正则、缓存参数
+#   config/security.yml   —— API 密钥（gitignore，不提交）
+
+server:
+  port: 8080
+
+spring:
+  application:
+    name: wechat-bot-demo
+  config:
+    import:
+      - optional:classpath:config/security.yml    # optional：缺失时仍可启动（通过环境变量提供 key）
+      - classpath:config/ai.yml
+      - classpath:config/bot.yml
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/wxbot_db?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: always   # 启动时执行 schema.sql 建表
+
+# MyBatis-Plus
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# Actuator 端点（健康检查 + 指标）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
