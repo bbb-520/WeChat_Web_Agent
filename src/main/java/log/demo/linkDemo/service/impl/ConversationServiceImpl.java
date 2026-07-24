@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Slf4j
 @Service
@@ -43,5 +44,25 @@ public class ConversationServiceImpl
                 .eq(Conversation::getStatus, 1)
                 .orderByDesc(Conversation::getCreatedAt)
                 .last("LIMIT 1"));
+    }
+
+    @Override
+    public List<Conversation> getRecentByUser(String userId, int limit) {
+        return list(new LambdaQueryWrapper<Conversation>()
+                .eq(Conversation::getUserId, userId)
+                .orderByDesc(Conversation::getCreatedAt)
+                .last("LIMIT " + limit));
+    }
+
+    @Override
+    public List<Conversation> getAllByUser(String userId) {
+        return list(new LambdaQueryWrapper<Conversation>()
+                .eq(Conversation::getUserId, userId)
+                .orderByDesc(Conversation::getCreatedAt));
+    }
+
+    @Override
+    public Conversation getByConvId(Long convId) {
+        return getById(convId);
     }
 }

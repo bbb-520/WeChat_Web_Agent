@@ -5,6 +5,7 @@ import log.demo.linkDemo.service.MessageSender;
 
 /**
  * Agent 上下文 —— 封装一次智能体调用的全部入参。
+ * 用于在一次智能体调用中封装所有需要的上下文信息
  *
  * <p>与旧 {@code ToolContext} 的区别：新增 {@link #intent} 字段，
  * 由 {@link IntentClassifier} 在路由前填充，Agent 据此判断是否处理。</p>
@@ -14,14 +15,23 @@ import log.demo.linkDemo.service.MessageSender;
  */
 public class AgentContext {
 
+    //用户ID
     private final String userId;
+    //用户发送的文本消息
     private String text;  // mutable: allows VoiceAgent to strip prefix and continue chain
+    //已识别的意图枚举
     private final Intent intent;
+    //路由场景标记 表示消息来源或类型（例如 TEXT、VOICE 等），可影响 Agent 的响应方式。若未指定，默认为 TEXT
     private final RouteContext routeContext;
+    //用户上传的图片原始字节数据，为 null 表示没有图片。
     private final byte[] imageBytes;
+    //用户上传的文件原始字节数据，为 null 表示没有文件。
     private final byte[] fileBytes;
+    //上传文件的原始文件名，可用于日志记录或展示给用户
     private final String fileName;
+    //消息发送器，Agent 执行结束后通过它向用户回复文本、图片等结果，是 Agent 与外部通信的唯一出口
     private final MessageSender sender;
+    //流程是否继续的标志。在某些异步或流式场景下，可被设置为 false 来提前终止后续处理，默认为 true。
     private final boolean isRunning;
 
     private AgentContext(Builder builder) {

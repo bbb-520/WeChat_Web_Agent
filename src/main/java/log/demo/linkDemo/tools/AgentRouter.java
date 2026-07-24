@@ -31,6 +31,7 @@ public class AgentRouter {
     private final IntentClassifier classifier;
     private final GlobalExceptionHandler exceptionHandler;
     private final IdiomGameService idiomGameService;
+    //用EnumMap直接查找对应意图的 Agent 并执行（使用 CHAT 作为兜底 Agent）
     private final Map<Intent, Agent> agentMap = new EnumMap<>(Intent.class);
     private final Agent fallbackAgent;
 
@@ -45,6 +46,7 @@ public class AgentRouter {
         this.classifier = classifier;
         this.exceptionHandler = exceptionHandler;
         this.idiomGameService = idiomGameService;
+
         Agent chat = null;
         for (Agent agent : agents) {
             agentMap.put(agent.intent(), agent);
@@ -55,10 +57,13 @@ public class AgentRouter {
         this.fallbackAgent = chat;
     }
 
+    /**
+     * 在 Bean 初始化完成后，自动打印所有已注册的 Agent 信息
+     */
     @PostConstruct
     void logRegistry() {
         log.info("[AGENT-ROUTER] Agent 注册完成 | agents={} | fallback={}",
-                agentMap.keySet(),
+                agentMap.keySet(),      //获取 agentMap中所有已注册的 Intent 键的 Set 集合
                 fallbackAgent != null ? fallbackAgent.name() : "NONE");
     }
 
@@ -88,6 +93,7 @@ public class AgentRouter {
 
         Intent intent = classifier.classify(ctx);
 
+        //通过意图获取Agent实例
         Agent agent = agentMap.get(intent);
         if (agent == null) {
             agent = fallbackAgent;
@@ -101,6 +107,7 @@ public class AgentRouter {
             } catch (Exception e) {
                 log.error("[AGENT-ROUTER] Agent 执行异常 | agent={} | userId={} | intent={}",
                         agent.name(), ctx.userId(), intent, e);
+                //将 Agent 执行过程中抛出的异常交给全局异常处理器统一处理
                 exceptionHandler.handle(ctx.userId(), ctx.sender(),
                         agent.name(), e);
             }

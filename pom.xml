@@ -21,7 +21,18 @@
         <lombok.version>1.18.46</lombok.version>
     </properties>
 
+
     <dependencies>
+        <dependency>
+            <groupId>com.github.victools</groupId>
+            <artifactId>jsonschema-generator</artifactId>
+            <version>4.37.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.victools</groupId>
+            <artifactId>jsonschema-module-jackson</artifactId>
+            <version>4.37.0</version>
+        </dependency>
 
         <!-- Spring AI Alibaba DashScope -->
         <dependency>
@@ -113,6 +124,11 @@
             <groupId>io.projectreactor</groupId>
             <artifactId>reactor-test</artifactId>
             <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.github.victools</groupId>
+            <artifactId>jsonschema-generator</artifactId>
+            <version>4.37.0</version>
         </dependency>
 
     </dependencies>

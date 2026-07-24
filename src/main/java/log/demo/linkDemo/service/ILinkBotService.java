@@ -163,7 +163,8 @@ public class ILinkBotService implements MessageSender {
     }
 
     /**
-     * 语音消息：提取 ASR 文本 → 回显 → 构建 AgentContext（VOICE 上下文）→ 分发。
+     * 语音消息：提取 ASR 文本 → 直接路由到 AgentRouter（VOICE 上下文）。
+     * 不再回显识别文本，减少一次网络往返，提升响应速度。
      */
     private void handleVoiceMessage(String userId, MessageItem item) {
         String text = item.getVoice_item().getText();
@@ -174,7 +175,6 @@ public class ILinkBotService implements MessageSender {
         log.info("[VOICE-IN] 语音识别 | userId={} | text=\"{}\"",
                 userId, text.length() > 50 ? text.substring(0, 50) + "..." : text);
         saveUserMessage(userId, text, "VOICE");
-        sendText(userId, "【语音识别】\n" + text);
 
         AgentContext ctx = AgentContext.builder()
                 .userId(userId).text(text).routeContext(RouteContext.VOICE)
