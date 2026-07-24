@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>两套 HTTP 客户端：</p>
  * <ol>
- *   <li><b>自定义 OkHttpClient Bean</b> — {@link log.demo.linkDemo.agent.image.ImageGenService#downloadImage}
+ *   <li><b>自定义 OkHttpClient Bean</b> — {@link log.demo.linkDemo.tools.image.ImageGenService#downloadImage}
  *       等直接 OkHttp 调用使用</li>
  *   <li><b>DashScope SDK 内建 OkHttpClient</b> — Spring AI / DashScope SDK 内部使用，
  *       通过环境变量 + {@link Constants#connectionConfigurations} 配置。

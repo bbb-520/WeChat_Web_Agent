@@ -1,8 +1,8 @@
 # 微信 iLink 多模态 AI 机器人 — 项目文档
 
-> **更新日期:** 2026-07-23
+> **更新日期:** 2026-07-24
 > **作者:** bbb
-> **分支:** master
+> **分支:** main
 
 ---
 
@@ -11,31 +11,37 @@
 ### 1.1 项目简介
 
 本项目是一个基于 **Spring Boot 3.2 + Java 21** 的微信 iLink 多模态 AI 机器人。
-通过接入微信 iLink SDK，实现在微信客户端内与 AI 进行多轮对话、图片生成/编辑、语音合成（TTS）、文件内容识别分析、天气查询等功能。
+通过接入微信 iLink SDK，实现在微信客户端内与 AI 进行多轮对话、图片生成/编辑、语音合成（TTS）、文件内容识别分析、天气查询、成语接龙游戏等功能。
 
 ### 1.2 架构概览
 
-项目采用 **Route Workflow Agent 架构**：消息到达后由 **IntentClassifier**（qwen-turbo LLM + 正则快速路径双层策略）进行意图分类，**AgentRouter**（O(1) Map 查找）直接路由到对应 Agent 执行。每个 Agent 封装独立的功能域和专属模型。
+项目采用 **Route Workflow Agent 架构**：消息到达后先经 AgentRouter 成语接龙拦截，再由 **IntentClassifier**（v2.1：LLM 默认 + 严格正则短路 + 黑名单校验三层策略）进行意图分类，**AgentRouter**（O(1) Map 查找）直接路由到对应 Agent 执行。未处理异常由 **GlobalExceptionHandler** 统一捕获格式化。
 
 ```
-微信消息 → AgentContext 构建 → IntentClassifier (qwen-turbo + 正则) → Intent 分类
-                                                                           │
-                                            ┌──────────────────────────────┘
-                                            ▼
-                                     AgentRouter (O(1) Map 查找)
-                                            │
-        ┌───────────────┬───────────────────┼───────────────────┬──────────────┐
-        ▼               ▼                   ▼                   ▼              ▼
-   ChatAgent      CommandAgent         WeatherAgent         ImageGen       FileAgent
-   (qwen-plus)    (/命令处理)          (高德API v2)         Agent          (Tika+AI)
-        │               │                   │              (wan2.5)           │
-        │               │              ┌────┴────┐             │              │
-        │               │              │ 地理编码  │    ImageRecogAgent   FileRecogService
-        │               │              │ TTL缓存  │    (qwen-vl+)         │
-        │               │              │ DB持久化 │             │        RAG切片
-   VoiceGenAgent        │              └─────────┘    图片编辑管线     + Embedding
-   (cosyvoice)                                                                  │
-                                                         发送结果 ←─────────────┘
+微信消息 → AgentContext 构建
+              │
+              ▼
+       AgentRouter.route()
+              │
+              ├─ 成语接龙拦截（游戏中非命令文本 → IdiomGameService）
+              ▼
+       IntentClassifier (LLM默认 + 严格正则短路 + 黑名单校验)
+              │
+              ▼
+       AgentRouter O(1) Map 路由
+              │
+              ├─ try-catch → GlobalExceptionHandler 统一错误格式
+              │
+    ┌─────────┼──────────┬──────────┬──────────┬──────────┬──────────┐
+    ▼         ▼          ▼          ▼          ▼          ▼          ▼
+ChatAgent CommandAgent WeatherAgent ImageGen  FileAgent  VoiceGen  IdiomGame
+(qwen+)   (/命令+cy)   (高德v2)   Agent      (Tika+AI) Agent    Service
+    │         │           │       (wan2.5)      │       (cosyvoice)  │
+    │         │      ┌────┴────┐     │    FileRecogService   │   O(1)词典
+    │         │      │地理编码   │ ImageRecogAgent │         │  游戏会话
+    │         │      │TTL缓存   │ (qwen-vl+)      │         │  积分DB
+    │         │      │NPE安全   │     │     RAG切片+Embedding │
+    └─────────┴──────┴──────────┴─────┴──────────┴──────────┴──────────┘
 ```
 
 ### 1.3 技术栈
@@ -46,7 +52,7 @@
 | **Spring Boot** | 3.2.10 |
 | **Spring AI** | Alibaba DashScope Starter 1.0.0.1 |
 | **AI 模型平台** | 阿里云 DashScope（通义千问 / 万象 / CosyVoice / Paraformer） |
-| **意图分类** | qwen-turbo LLM + 正则快速路径（双层策略） |
+| **意图分类** | qwen-turbo（v2.1：LLM 默认 + 严格正则短路 + 黑名单 + 图片上下文校验） |
 | **ORM** | MyBatis-Plus 3.5.7 |
 | **数据库** | MySQL 8.x（数据库名 `wxbot_db`） |
 | **微信 SDK** | wechat-ilink-sdk 2.3.3 |
@@ -60,15 +66,17 @@
 
 | 功能 | Agent | 模型/API | 说明 |
 |------|-------|----------|------|
-| **意图分类** | IntentClassifier | qwen-turbo + 正则 | 双层策略：快速正则 → LLM 回退 |
+| **意图分类** | IntentClassifier | qwen-turbo + 严格正则 | v2.1：LLM 默认 + 黑名单 + IMAGE_EDIT 上下文校验 |
 | **AI 多轮对话** | ChatAgent | qwen-plus | 滑动窗口记忆 + RAG 增强 |
 | **文生图** | ImageGenAgent | wan2.5-t2i-preview | 文本描述 → AI 生成图片，支持参考图迭代 |
 | **图片识别&编辑** | ImageRecognitionAgent | qwen-vl-plus + wan2.5 | 上传图识别 → 编辑指令 → 多模态理解 → 重绘 |
 | **语音合成** | VoiceGenAgent | cosyvoice-v1 | 文本 → TTS → WAV 音频，12 种音色 |
-| **天气查询** | WeatherAgent v2 | 高德 API | 地理编码回退 + TTL 缓存 + DB 持久化 |
+| **天气查询** | WeatherAgent v2.1 | 高德 API | 地理编码回退 + TTL 缓存 + DB 持久化 + NPE 安全 |
 | **文件识别** | FileAgent | Tika + qwen-plus | 文本提取 → AI 分析 → RAG 切片 + Embedding |
-| **命令系统** | CommandAgent | / 前缀路由 | 8 个内置命令 |
-| **会话持久化** | — | MySQL | 全部消息/会话/音色/天气/文件入库 |
+| **命令系统** | CommandAgent | / 前缀路由 | /cy 成语接龙等命令 |
+| **成语接龙** | IdiomGameService | 内置 ~590 成语 | O(1) 词典查找 + 独立会话 + 积分 DB + 超时清理 |
+| **全局异常拦截** | GlobalExceptionHandler | — | 统一错误格式 + 追踪 ID + 异常分类 |
+| **会话持久化** | — | MySQL | 全部消息/会话/音色/天气/文件/游戏记录入库 |
 
 ---
 
@@ -82,12 +90,12 @@ src/main/java/log/demo/linkDemo/
 │   ├── BotProperties.java            # bot.* 配置属性绑定
 │   ├── HttpClientConfig.java         # OkHttpClient Bean + DashScope SDK 超时注入
 │   └── VoiceProperties.java          # TTS 配置属性绑定
-├── agent/                            # ★ Agent 智能体层
+├── tools/                            # ★ Agent 智能体层
 │   ├── Intent.java                   # 意图枚举（8 种）
 │   ├── Agent.java                    # Agent 接口
 │   ├── AgentContext.java             # Agent 调用上下文
-│   ├── IntentClassifier.java         # LLM + 正则双层意图分类器（qwen-turbo）
-│   ├── AgentRouter.java              # O(1) Map 路由器（Intent → Agent）
+│   ├── IntentClassifier.java         # v2.1：LLM 默认 + 严格正则短路 + 黑名单 + 校验
+│   ├── AgentRouter.java              # O(1) Map 路由器 + 成语接龙拦截 + 异常捕获
 │   ├── BotMetrics.java               # Micrometer 指标注册
 │   ├── TextTool.java                 # 文本工具类（截断/TTS提取/音色剥离）
 │   ├── chat/                         # 对话智能体
@@ -96,113 +104,261 @@ src/main/java/log/demo/linkDemo/
 │   ├── command/                      # 命令智能体
 │   │   ├── CommandAgent.java         # 命令分发 Agent
 │   │   ├── Command.java              # 命令函数式接口
-│   │   └── CommandRegistry.java      # 命令注册表（LinkedHashMap 前缀匹配）
+│   │   └── CommandRegistry.java      # 命令注册表（LinkedHashMap 前缀匹配 + /cy 子命令）
 │   ├── voice/                        # 语音智能体
 │   │   ├── VoiceGenAgent.java        # TTS + 音色切换 Agent
 │   │   ├── TTSEngine.java            # DashScope CosyVoice TTS API 封装
 │   │   ├── TimbreSession.java        # 用户音色会话管理器
 │   │   └── AudioTranscoder.java      # PCM → WAV 转码 + 时长计算
 │   ├── weather/                      # 天气智能体
-│   │   └── WeatherAgent.java         # 高德天气 API Agent (v2: 地理编码 + 缓存 + DB)
+│   │   └── WeatherAgent.java         # 高德天气 API Agent（v2.1：NPE 安全 + 地理编码 + 缓存 + DB）
 │   ├── image/                        # 图片智能体
 │   │   ├── ImageGenAgent.java        # 文生图 Agent（wan2.5, 支持迭代）
 │   │   ├── ImageRecognitionAgent.java # 图片识别 + 完整编辑管线（v2）
 │   │   ├── ImageGenService.java      # DashScope 文生图 API 封装（长轮询）
 │   │   ├── ImageCacheManager.java    # 待编辑图片缓存（会话隔离 + 锁）
 │   │   └── ImageContextManager.java  # 生成图片上下文（迭代编辑参考图）
-│   └── file/                         # 文件智能体
-│       ├── FileAgent.java            # 文件处理 Agent（Tika + AI + RAG）
-│       └── FileRecognitionService.java # MIME检测 + 内容提取 + AI分析 + RAG切片 + FileRecord持久化
+│   ├── file/                         # 文件智能体
+│   │   ├── FileAgent.java            # 文件处理 Agent（Tika + AI + RAG）
+│   │   └── FileRecognitionService.java # MIME检测 + 内容提取 + AI分析 + RAG切片 + FileRecord持久化
+│   └── idiom/                        # ★ 成语接龙（v2.1 新增）
+│       ├── IdiomDictionary.java      # ~590 成语 + O(1) 首字索引 + 随机查找
+│       ├── GameSession.java          # 独立游戏会话状态
+│       └── IdiomGameService.java     # 游戏逻辑 + 会话管理 + 积分 + 超时清理
 ├── entity/                           # 数据库实体
 │   ├── Conversation.java / Message.java / FileRecord.java
 │   ├── ImageRecord.java / TimbreChange.java / WeatherQuery.java
-│   ├── DocumentChunk.java / UserMemory.java / VoiceResult.java
+│   ├── IdiomGameRecord.java / DocumentChunk.java / UserMemory.java / VoiceResult.java
 ├── enums/  RouteContext.java / Timbre.java
-├── exception/  BotException / AIServiceException / ConfigurationException / ...
-├── mapper/   8 个 MyBatis-Plus Mapper
+├── exception/
+│   ├── BotException / AIServiceException / ConfigurationException / ...
+│   └── GlobalExceptionHandler.java   # ★ 全局异常拦截器（v2.1 新增）
+├── mapper/   9 个 MyBatis-Plus Mapper（含 IdiomGameRecordMapper）
 ├── rag/      VectorStoreService / RAGRetrievalService / RAGContextAugmenter / EmbeddingService / DocumentChunkingService
 ├── service/
 │   ├── ILinkBotService.java          # 微信 iLink 适配器（核心入口 + MessageSender 实现）
 │   ├── MessageSender.java            # 消息发送抽象接口
-│   ├── ChatPersistenceService.java   # 持久化门面（8 个 Service 聚合）
-│   └── impl/                          # 8 个 ServiceImpl
+│   ├── ChatPersistenceService.java   # 持久化门面
+│   ├── IIdiomGameRecordService.java  # 成语接龙积分服务接口
+│   └── impl/                          # 9 个 ServiceImpl
 └── resources/
     ├── application.yml               # 主配置
-    ├── schema.sql                    # 建表脚本
+    ├── schema.sql                    # 建表脚本（v2.1：message_id 默认值 + idiom_game_record 表）
     ├── config/  ai.yml / bot.yml / security.yml
     └── prompts/  system.txt / file-system.txt
 ```
 
 ---
 
-## 三、功能详解（示例 → 调用链 → 生命周期）
+## 三、功能详解
 
-### 3.1 意图分类（IntentClassifier）
+### 3.1 意图分类（IntentClassifier v2.1）
 
-**双层策略：** 正则快速路径（零延迟）→ qwen-turbo LLM 回退（~200ms）。
+**三层策略：** 确定性规则 → 严格正则（带校验）→ qwen-turbo LLM 默认路径。
+
+v2.1 核心改进：默认将所有请求交由 LLM 进行意图判断，仅在识别出明确的、简单的意图时才短路到快速执行路径。正则命中后增加黑名单校验和上下文图片检查，避免误判。
 
 #### 示例
 
 | 用户输入 | 匹配路径 | 分类结果 |
 |----------|----------|----------|
-| `/draw 一只猫` | 前缀 `/` → 快速路径 | `COMMAND` |
-| `画一只猫` | IMAGE_GEN_RE 正则 | `IMAGE_GEN` |
-| `改成黑白风格` | IMAGE_EDIT_RE 正则 | `IMAGE_EDIT` |
+| `/draw 一只猫` | 前缀 `/` → 确定性规则 | `COMMAND` |
+| `画一只猫` | IMAGE_GEN_RE 严格匹配（必须含图片名词） | `IMAGE_GEN` |
+| `把图片改成黑白风格` | IMAGE_EDIT_RE 匹配 + 上下文校验通过 | `IMAGE_EDIT` |
+| `改成黑白风格`（无上下文图片） | IMAGE_EDIT_RE 不匹配 → LLM | 由 LLM 判断 |
+| `生成完整的 ILinkBotService 示例代码` | IMAGE_GEN 不匹配 / 黑名单拦截 → LLM | `CHAT` |
+| `修改代码` | IMAGE_EDIT 黑名单拦截 → LLM | `CHAT` |
+| `画流程图` | IMAGE_GEN 不匹配（无图片名词） → LLM | `CHAT` |
 | `帮我看看外面要不要带伞` | 无正则命中 → LLM | `WEATHER` |
-| `你好` | 无正则命中 → LLM | `CHAT` |
 
 #### 完整调用链
 
 ```
 ILinkBotService.handleMessage()                     [service/ILinkBotService.java:107]
-  └─ AgentRouter.route(ctx)                        [agent/AgentRouter.java:64]
-       └─ IntentClassifier.classify(ctx)            [agent/IntentClassifier.java:84]
-            ├─ 快速路径检查:
-            │   ├─ ctx.text().startsWith("/")  → COMMAND       [:86]
-            │   ├─ ctx.hasFile()               → FILE          [:87]
-            │   └─ ctx.hasImage()              → IMAGE_EDIT    [:88]
-            ├─ 正则快速路径: regexClassify(text)                [:94]
-            │   ├─ IMAGE_GEN_RE.find()    → IMAGE_GEN          [:113]
-            │   ├─ IMAGE_EDIT_RE.find()   → IMAGE_EDIT         [:114]
-            │   ├─ TTS_RE.find()          → TTS                [:115]
-            │   ├─ VOICE_SWITCH_RE.find() → VOICE_SWITCH       [:116]
-            │   └─ WEATHER_RE.find()      → WEATHER            [:118]
-            └─ LLM 回退: llmClassify(text)                     [:102]
+  └─ AgentRouter.route(ctx)                        [tools/AgentRouter.java:75]
+       ├─ 成语接龙拦截（游戏中非命令文本）            [:77-86]
+       └─ IntentClassifier.classify(ctx)            [tools/IntentClassifier.java:168]
+            ├─ 层1 确定性规则:
+            │   ├─ ctx.text().startsWith("/")  → COMMAND       [:170]
+            │   ├─ ctx.hasFile()               → FILE          [:171]
+            │   └─ ctx.hasImage()              → IMAGE_EDIT    [:172]
+            ├─ 层2 严格正则 + 校验: strictRegexClassify(ctx)   [:199]
+            │   ├─ IMAGE_GEN_RE.find() → 黑名单检查 → IMAGE_GEN [:203-209]
+            │   ├─ IMAGE_EDIT_RE.find() → 黑名单检查
+            │   │   → 上下文图片校验(imageCacheManager.containsKey)
+            │   │   → IMAGE_EDIT                               [:213-226]
+            │   ├─ TTS_RE.find()          → TTS                [:230]
+            │   ├─ VOICE_SWITCH_RE.find() → VOICE_SWITCH       [:233]
+            │   └─ WEATHER_RE.find()      → WEATHER            [:236]
+            └─ 层3 LLM 默认路径: llmClassify(text)             [:186]
                  └─ intentChatClient (qwen-turbo)
                       .prompt().system(CLASSIFY_PROMPT).user(text).call()
                       失败 → 自动降级 CHAT
 ```
 
-#### 关键正则（v2.0 优化版）
+#### 关键正则（v2.1 严格化）
 
 ```java
-// 画一张 / 生成一张 → IMAGE_GEN（前缀强信号，优先匹配）
-IMAGE_GEN_RE  = "(画|生成|绘制|做图|画图|画一张|生成一张|做一张|来一张)(一?[张个幅]?.{0,20}|$)"
+// 必须含"量词 + 图片名词"：生成一张图/画个头像/做张海报
+IMAGE_GEN_RE  = "(?:画|生成|绘制|做|来|帮我画|...)(?:一?[张个幅]|一下)"
+                + "(?:图|图片|照片|插画|头像|壁纸|logo|图标|海报|...)"
 
-// 仅保留双字编辑动作词（移除 改/换/变/加 单字防误判）
-IMAGE_EDIT_RE = "(修改|改成|换成|编辑|调整|替换|添加|删除|去掉|去除|增加|加上|加个|换个|重绘|重新生成).{1,15}"
+// 必须含明确的图片指代词：这张图/那张照片/图片改成...
+IMAGE_EDIT_RE = "(?:把|将|给)?(?:这张图|那张图|图片|照片|图)(?:.{0,10})"
+                + "(?:修改|改成|换成|编辑|调整|替换|P一下|去水印|...)"
 
-// 天气关键词（弱信号，最后匹配，防止"画一张天气图"误判）
-WEATHER_RE    = "(天气|温度|气温|热不热|冷不冷|会不会下雨|有没有雨|多少度|几度|刮风|雾霾|空气质量|天气预报)"
+// 排除绘画前缀的天气正则："画一张天气图"不会被误判为 WEATHER
+WEATHER_RE    = "^(?!.*(画|生成|绘制|...)).*(?:天气预报|天气|温度|...)"
+
+// TTS/VOICE_SWITCH: 添加 ^ 起始锚点，仅匹配明确语序
 ```
+
+#### 黑名单（v2.1 新增）
+
+| 黑名单 | 拦截场景 | 示例 |
+|--------|---------|------|
+| IMAGE_GEN_BLACKLIST (5 patterns) | 代码/文档/流程/架构 | "生成ILinkBotService示例代码"、"画流程图" |
+| IMAGE_EDIT_BLACKLIST (2 patterns) | 代码/配置/文档修改 | "修改代码"、"编辑文档"、"调整参数" |
 
 #### 生命周期
 
 ```
-[构造] IntentClassifier(@Qualifier intentChatClient)
-   └─ intentChatClient 注入（qwen-turbo, temperature=0, maxToken=20, 无记忆）
+[构造] IntentClassifier(@Qualifier intentChatClient, ImageCacheManager)
+   └─ intentChatClient 注入（qwen-turbo, 无记忆）
 
 [@PostConstruct] init()
-   └─ log 初始化信息
+   └─ log v2.1 初始化信息 + 黑名单数量
 
-[运行时] classify(ctx) — 每次消息到达调用一次，~200ms（LLM 路径）或 <1ms（正则路径）
+[运行时] classify(ctx) — 每消息一次，<1ms（确定性规则）/ LLM ~200ms / 严格正则 <1ms
 
-[销毁] 无特殊清理（ChatClient 由 Spring 管理）
+[销毁] 无特殊清理
 ```
 
 ---
 
-### 3.2 AI 多轮对话（ChatAgent + ChatService）
+### 3.2 成语接龙（IdiomGameService）★ 新增
+
+使用 `/cy start` 等命令显式触发，避免干扰正常聊天。已用成语加入 Set 记录，O(1) 词典查找，独立会话管理，超时自动结束，积分持久化。
+
+#### 示例
+
+```
+用户: /cy start
+Bot:  🎯 成语接龙开始！
+     当前成语：「虎虎生威」
+     请说出一个以「威」开头的成语
+
+用户: 威风凛凛
+Bot:  ✅ 接龙成功！威风凛凛 → 凛然正气
+     轮到你了！请说出以「气」开头的成语
+     📊 当前积分：1 | 已接 2 轮
+
+用户: 气壮山河
+Bot:  ✅ 接龙成功！气壮山河 → 河清海晏
+     ...
+
+用户: /cy stop
+Bot:  🛑 游戏已结束
+     📊 最终积分：5 | 🔄 总轮数：10
+     输入 /cy ls 查看历史积分
+
+用户: /cy ls
+Bot:  📋 最近成语接龙积分
+     1. 07-24 15:30 | 积分：5 | 轮数：10 | 🛑 主动结束
+     2. 07-23 10:00 | 积分：3 | 轮数：6  | ⏰ 超时
+```
+
+#### 完整调用链
+
+```
+═══════════ 游戏开始 ═══════════
+
+用户发送: /cy start
+  → AgentRouter: text.startsWith("/") → 正常流程
+    → IntentClassifier → COMMAND
+      → CommandAgent → CommandRegistry.execute()
+        → "/cy " 前缀匹配 → handleIdiomGame()
+          → sub="start" → idiomGameService.startGame(userId, null)
+            → dictionary.randomIdiom() → "虎虎生威"
+            → new GameSession(userId, "虎虎生威") → sessions.put()
+
+═══════════ 游戏接龙（AgentRouter 拦截） ═══════════
+
+用户发送: 威风凛凛
+  → AgentRouter.route()
+    → idiomGameService.isUserInGame(userId) → true
+    → text 不以 "/" 开头 → idiomGameService.handleInput()
+      → dictionary.isValid("威风凛凛") → true
+      → session.usedIdioms().contains("威风凛凛") → false
+      → "威风凛凛".charAt(0) == "威" → true ✓
+      → session.recordSuccess("威风凛凛")  // score++, rounds++
+      → dictionary.findChain('凛', usedIdioms) → Optional["凛然正气"]
+      → session.recordAiMove("凛然正气")
+      → 返回 "✅ 接龙成功！..."
+
+═══════════ AI 无法接龙（用户获胜） ═══════════
+
+用户发送: xxx
+  → handleInput() → 校验通过 → recordSuccess()
+  → dictionary.findChain(lastChar, usedIdioms) → Optional.empty()
+  → session.addBonus(2)  // +2 奖励分
+  → saveRecord(userId, score, rounds, "USER_WIN")  // 写入 DB
+  → sessions.remove(userId)
+  → 返回 "🎉 恭喜！我已无法接龙..."
+
+═══════════ 超时自动结束 ═══════════
+
+cleanupExecutor (每2min):
+  → 遍历 sessions
+  → isExpired(s) → Duration.between(lastActivity, now).toMinutes() >= 5
+  → saveRecord() → sessions.remove()
+```
+
+#### 核心设计
+
+| 设计点 | 说明 |
+|--------|------|
+| **O(1) 词典查找** | `Map<Character, List<String>>` 首字索引 + `Set<String>` 全量，均为 O(1) |
+| **独立会话** | `ConcurrentHashMap<String, GameSession>`，userId 隔离，互不干扰 |
+| **超时清理** | `ScheduledExecutorService` 每 2 分钟扫描，5 分钟无操作自动结束 |
+| **AgentRouter 拦截** | 游戏中非 `/` 开头文本直接路由到游戏，不走 LLM 分类 |
+| **积分持久化** | `idiom_game_record` 表，支持历史查询最近 3 局 |
+| **AI 接龙** | Fisher-Yates 随机抽样，从未使用的候选成语中选择 |
+
+#### 命令一览
+
+| 命令 | 行为 |
+|------|------|
+| `/cy start` | 随机起始成语 |
+| `/cy start 龙飞凤舞` | 指定起始成语 |
+| `/cy stop` | 结束并保存积分 |
+| `/cy ls` | 最近三局积分 |
+| `/cy help` | 规则帮助 |
+| `{四字成语}`（游戏中） | 自动识别为接龙输入 |
+
+#### 生命周期
+
+```
+[构造] IdiomGameService(IdiomDictionary, IIdiomGameRecordService)
+   └─ cleanupExecutor = newSingleThreadScheduledExecutor()
+
+[@PostConstruct] init()
+   └─ scheduleAtFixedRate(cleanupInactive, 2min, 2min)
+
+[运行时]
+   ├─ startGame(userId, startIdiom) → new GameSession
+   ├─ handleInput(userId, text) → 校验 + AI 接龙 + 响应
+   ├─ endGame(userId, reason) → saveRecord + remove session
+   ├─ getHistory(userId) → DB 查询最近 3 局
+   └─ isUserInGame(userId) → 超时检查 + 会话查找
+
+[@PreDestroy] destroy()
+   └─ 保存所有活跃会话 → sessions.clear() → executor.shutdown()
+```
+
+---
+
+### 3.3 AI 多轮对话（ChatAgent + ChatService）
 
 #### 示例
 
@@ -217,8 +373,8 @@ Bot:  （有记忆）我们刚才在讨论我的功能...
 #### 完整调用链
 
 ```
-AgentRouter.route(ctx) → intent=CHAT → ChatAgent        [agent/AgentRouter.java:67]
-  └─ ChatAgent.execute(ctx)                              [agent/chat/ChatAgent.java]
+AgentRouter.route(ctx) → intent=CHAT → ChatAgent        [tools/chat/ChatAgent.java]
+  └─ ChatAgent.execute(ctx)
        ├─ ImageCacheManager.removeSilently(userId)       # 清除待编辑图片缓存
        ├─ RAGRetrievalService.retrieve(text)             # 检索相关文档
        ├─ 有相关文档:
@@ -244,25 +400,9 @@ AgentRouter.route(ctx) → intent=CHAT → ChatAgent        [agent/AgentRouter.j
 | `describeImageEdit()` | qwen-vl-plus | UUID 隔离 | 图片编辑 prompt 生成 |
 | `analyzeDocument()` | qwen-plus | UUID 隔离 + 重试2次 | 文档 AI 分析 |
 
-#### 生命周期
-
-```
-[构造] ChatAgent(ChatService, RAGRetrievalService, ImageCacheManager, VoiceGenAgent)
-
-[运行时] execute(ctx)
-   └─ 同步执行（文本对话为同步，语音后处理异步）
-
-[销毁] 无特殊清理（ChatClient/ChatMemory 由 AiConfig Bean 生命周期管理）
-
-ChatService:
-  [@PostConstruct] initSystemPrompt() — 从 classpath:prompts/system.txt 加载
-  [运行时] 无状态，线程安全（ChatClient 内部管理连接池）
-  [clearHistory] 手动清除用户会话记忆
-```
-
 ---
 
-### 3.3 文生图（ImageGenAgent + ImageGenService）
+### 3.4 文生图（ImageGenAgent + ImageGenService）
 
 #### 示例
 
@@ -279,71 +419,43 @@ Bot:  正在生成图片（基于上一张迭代）...
 #### 完整调用链
 
 ```
-AgentRouter.route(ctx) → intent=IMAGE_GEN → ImageGenAgent      [agent/AgentRouter.java:67]
-  └─ ImageGenAgent.execute(ctx)                                 [agent/image/ImageGenAgent.java:53]
+AgentRouter.route(ctx) → intent=IMAGE_GEN → ImageGenAgent      [tools/image/ImageGenAgent.java:53]
+  └─ ImageGenAgent.execute(ctx)
        └─ executor.submit(() -> doImageGen(ctx))                # 虚拟线程异步
 
-doImageGen(ctx):                                                [:60]
+doImageGen(ctx):
   1. imageContextManager.getLastRefImage(userId)                # 获取上一张图 CDN URL
   2. ctx.sender().sendText("正在生成图片...")
   3. refUrl != null ?
-       imageGenService.generateImageUrl(prompt, refUrl)         # 带参考图生成
-         └─ 失败 → 自动回退 generateImageUrl(prompt, null)     [:78]
-     : imageGenService.generateImageUrl(prompt)                 # 纯文本生成
-         └─ ImageSynthesis.asyncCall(param) → taskId            [agent/image/ImageGenService.java:57]
-         └─ 长轮询: for(i=0; i<90; i++) sleep(2s)               [:62-79]
+       imageGenService.generateImageUrl(prompt, refUrl)
+         └─ 失败 → 自动回退 generateImageUrl(prompt, null)
+     : imageGenService.generateImageUrl(prompt)
+         └─ ImageSynthesis.asyncCall(param) → taskId
+         └─ 长轮询: for(i=0; i<90; i++) sleep(2s)
               ├─ fetch(taskId) → "SUCCEEDED" → 提取 CDN URL
-              ├─ fetch(taskId) → "FAILED"    → log error → null
-              └─ 90次超时(180s) → log error → null
+              ├─ fetch(taskId) → "FAILED"    → null
+              └─ 90次超时(180s) → null
   4. imageGenService.downloadImage(url)                         # Java HttpClient GET
-  5. imageContextManager.save(userId, url, bytes)               # 保存上下文供迭代
+  5. imageContextManager.save(userId, url, bytes)
   6. ctx.sender().sendImage(userId, bytes, "ai-gen.png", prompt)
-```
-
-#### ImageGenService 核心参数
-
-```java
-model:  wan2.5-t2i-preview
-n:      1                     // 每次生成 1 张
-size:   1024*1024             // 方形
-refImage: 上一张图 CDN URL（可选，实现迭代一致性）
-长轮询:   90次 × 2s = 180s 超时
-```
-
-#### 生命周期
-
-```
-[构造] ImageGenAgent(ImageGenService, ImageContextManager, ChatService)
-   └─ executor = Executors.newVirtualThreadPerTaskExecutor()   # 虚拟线程池
-
-[@PostConstruct] 无特殊初始化（ImageGenService 通过 @Value 注入 apiKey/model）
-
-[运行时] execute(ctx)
-   └─ executor.submit(...) → 立即返回 true（不阻塞消息循环）
-   └─ doImageGen 在虚拟线程中异步执行
-
-[@PreDestroy] shutdown()                                        [:102]
-   └─ executor.shutdown() → awaitTermination(30s) → shutdownNow()
-
-ImageGenService: 无状态，每个 generateImageUrl 调用独立提交任务 + 长轮询
 ```
 
 ---
 
-### 3.4 图片识别 & 编辑（ImageRecognitionAgent）
+### 3.5 图片识别 & 编辑（ImageRecognitionAgent）
 
 #### 示例
 
 ```
 用户: [上传图片 photo.jpg]
 Bot:  【图片描述】
-      这是一张夕阳下的海滩照片，前景有棕榈树，天空呈橙红色...
-      💡 你可以对我说："改成黑白风格"、"把背景换成蓝天"、"添加一只猫" 等进行编辑
+      这是一张夕阳下的海滩照片，前景有棕榈树...
+      💡 你可以对我说："改成黑白风格"、"把背景换成蓝天" 等进行编辑
 
-用户: 改成黑白风格
-Bot:  正在分析编辑需求："改成黑白风格"...
+用户: 把图片改成黑白风格
+Bot:  正在分析编辑需求："把图片改成黑白风格"...
       正在生成编辑后的图片...
-      [发送编辑后图片: edited-image.png]
+      [发送编辑后图片]
 ```
 
 #### 完整调用链
@@ -352,79 +464,44 @@ Bot:  正在分析编辑需求："改成黑白风格"...
 ═══════════════ 第一阶段：图片上传识别 ═══════════════
 
 AgentRouter.route(ctx) → ctx.hasImage()=true
-  └─ IntentClassifier.classify(ctx) → IMAGE_EDIT               [:87]
-       └─ AgentRouter → ImageRecognitionAgent
+  → IntentClassifier.classify(ctx) → IMAGE_EDIT（确定性规则）
+    → ImageRecognitionAgent
 
-ImageRecognitionAgent.execute(ctx)                               [agent/image/ImageRecognitionAgent.java:62]
-  └─ ctx.hasImage()=true → handleImageUpload(ctx)               [:67]
-
-handleImageUpload(ctx):                                          [:76]
-  1. ctx.sender().sendText("正在识别图片...")                   # 隐式，在ChatService内
-  2. chatService.analyzeImage(ctx.imageBytes())                  [:82]
-       └─ ChatClient (qwen-vl-plus, 多模态)
-            .prompt().system(...).user(u->u.text("请详细描述...").media(imageMedia))
-            .call().content()
-  3. imageCacheManager.put(userId, ctx.imageBytes())             [:83]
+handleImageUpload(ctx):
+  1. chatService.analyzeImage(ctx.imageBytes())
+       └─ ChatClient (qwen-vl-plus).prompt()....media(imageMedia).call()
+  2. imageCacheManager.put(userId, ctx.imageBytes())
        └─ 生成 sessionId → 复合键 userId:sessionId → 缓存
-       └─ 容量保护: 超出 maxPendingImages → 淘汰最旧
-  4. ctx.sender().sendText("【图片描述】\n" + desc + "\n\n💡 ...")
+  3. ctx.sender().sendText("【图片描述】\n" + desc + "\n\n💡 ...")
 
 ═══════════════ 第二阶段：编辑指令执行 ═══════════════
 
-用户发送: "改成黑白风格"
-  └─ IntentClassifier.classify(ctx)
-       ├─ ctx.hasImage()=false（文本消息）
-       └─ IMAGE_EDIT_RE.find("改成黑白风格") → IMAGE_EDIT
+用户发送: "把图片改成黑白风格"
+  → IntentClassifier.classify(ctx)
+       ├─ IMAGE_EDIT_RE.find() → true
+       ├─ 黑名单检查 → 通过（无代码/文档关键词）
+       └─ IMAGE_EDIT 上下文校验 → imageCacheManager.containsKey(userId) → true
+         → 返回 IMAGE_EDIT
 
-ImageRecognitionAgent.execute(ctx)                               [:62]
-  ├─ ctx.hasImage()=false
-  └─ ctx.hasText() && imageCacheManager.containsKey(userId) → true
-       └─ executor.submit(() -> doImageEdit(ctx))               [:70]
+ImageRecognitionAgent.execute(ctx):
+  → executor.submit(() -> doImageEdit(ctx))
 
-doImageEdit(ctx):                                                [:92]（异步虚拟线程）
-  1. imageCacheManager.lock(userId)                             [:97]  # 串行化同用户编辑
-  2. imageCacheManager.peek(userId)                             [:99]   # peek不删除，失败可重试
-  3. ctx.sender().sendText("正在分析编辑需求...")
-  4. chatService.describeImageEdit(originalBytes, instruction)  [:105]
-       └─ ChatClient (qwen-vl-plus, 多模态)
-            .prompt().system(imageEditSystemPrompt)
-            .user(u->u.text("修改要求："+instruction).media(imageMedia))
-            .call().content()
-       → 返回编辑后画面的详细文本描述（作为文生图 prompt）
-  5. imageGenService.generateImageUrl(editPrompt)               [:110]  # wan2.5 文生图
-  6. imageGenService.downloadImage(imageUrl)                    [:117]
-  7. imageContextManager.save(userId, url, bytes)               [:123]   # 保存供迭代
-  8. imageCacheManager.removeSilently(userId)                   [:126]   # 清除待编辑缓存
-  9. ctx.sender().sendImage(userId, bytes, "edited-image.png")  [:129]
-  10. finally: imageCacheManager.unlock(userId)                 [:137]
-```
-
-#### 核心设计要点
-
-| 设计点 | 说明 |
-|--------|------|
-| **peek 不删除** | 编辑失败时保留原图，用户可重新发送编辑指令 |
-| **编辑锁** | `lock(userId)/unlock(userId)` 串行化同一用户的并发编辑 |
-| **多模态 + 重绘** | qwen-vl-plus 理解原图+指令 → 描述文本 → wan2.5 重新生成 |
-| **会话隔离** | ImageCacheManager 用 `userId:sessionId` 复合键，多图并发不覆盖 |
-
-#### 生命周期
-
-```
-[构造] ImageRecognitionAgent(ChatService, ImageCacheManager, ImageGenService, ImageContextManager)
-   └─ executor = Executors.newVirtualThreadPerTaskExecutor()
-
-[运行时] execute(ctx) — 双分支
-   ├─ 有图片 → handleImageUpload (同步识别)
-   └─ 有文本 + 缓存命中 → executor.submit(doImageEdit) (异步编辑)
-
-[@PreDestroy] shutdown()                                        [:146]
-   └─ executor.shutdown() → awaitTermination(30s) → shutdownNow()
+doImageEdit(ctx):（异步虚拟线程）
+  1. imageCacheManager.lock(userId)        # 串行化
+  2. imageCacheManager.peek(userId)        # peek 不删除
+  3. chatService.describeImageEdit(originalBytes, instruction)
+       └─ qwen-vl-plus: image + instruction → 编辑后详细描述
+  4. imageGenService.generateImageUrl(editPrompt)  # wan2.5 文生图
+  5. imageGenService.downloadImage(imageUrl)
+  6. imageContextManager.save(userId, url, bytes)
+  7. imageCacheManager.removeSilently(userId)
+  8. ctx.sender().sendImage(userId, bytes, "edited-image.png")
+  9. finally: imageCacheManager.unlock(userId)
 ```
 
 ---
 
-### 3.5 天气查询（WeatherAgent v2）
+### 3.6 天气查询（WeatherAgent v2.1）
 
 #### 示例
 
@@ -432,301 +509,137 @@ doImageEdit(ctx):                                                [:92]（异步�
 用户: 北京天气
 Bot:  正在查询「北京」天气...
       【北京北京市 实时天气报告】
-      🌡 当前温度 25°C，晴。
-      💧 相对湿度 45%，北风 3 级。
-      🕐 数据发布时间：2026-07-23 14:00:00。
-
-用户: 深圳明天天气
-Bot:  正在查询「深圳」天气...
-      【深圳市明天天气】（2026-07-24）
-      🌡 温度 26°C ~ 33°C。
-      ☀ 白天晴，🌙 夜间多云。
-      💧 湿度 60%，🌬 东南风 3 级。
+      🌡 当前温度 25°C，晴。💧 相对湿度 45%，北风 3 级。
 
 用户: 三亚天气
 Bot:  [内置38城市无"三亚"]
       → 调用高德地理编码API → "三亚" → adcode=460200
-      → 缓存 adcode（下次直接命中）
-      → 调用高德天气API → 返回实时天气报告
+      → 缓存 adcode → 调用天气API → 返回报告
 ```
 
-#### 完整调用链
+#### v2.1 NPE 安全修复
 
+```java
+// 之前：l.get("temperature").getAsDouble()  → key缺失或value为null → NPE
+// 现在：safeDouble(l, "temperature", 0.0)   → 安全返回默认值
+
+private static String safeString(JsonObject obj, String key, String defaultValue) {
+    try { var el = obj.get(key); if (el == null || el.isJsonNull()) return defaultValue;
+          return el.getAsString(); }
+    catch (Exception e) { return defaultValue; }
+}
 ```
-AgentRouter.route(ctx) → intent=WEATHER → WeatherAgent          [agent/AgentRouter.java:67]
-  └─ WeatherAgent.execute(ctx)                                  [agent/weather/WeatherAgent.java:143]
 
-execute(ctx):
-  1. extractCity(ctx.text())                                    [:144]
-       ├─ CITY_WEATHER_PATTERN 正则匹配 "城市名 + 天气关键词"     [:257-266]
-       ├─ 遍历 38 个内置城市（LinkedHashMap 保证长名优先）       [:269-271]
-       └─ 回退模糊匹配 "XX天气"                                  [:274-277]
-  2. ctx.sender().sendText("正在查询「" + city + "」天气...")
-  3. generateReport(userId, text)                               [:146]
-       ├─ 含"明天/明日" → buildForecastReport(userId, city, 1)  [:159]
-       ├─ 含"后天"     → buildForecastReport(userId, city, 2)  [:162]
-       ├─ 含"预报/未来" → buildMultiDayReport(userId, city)     [:165]
-       └─ 默认         → buildNowReport(userId, city)           [:168]
-
-buildNowReport(userId, city):                                   [:172]
-  1. fetchNow(city) — 带缓存                                    [:174]
-       ├─ CacheEntry cached = responseCache.get("now:"+city)    [:287]
-       ├─ 缓存命中且未过期 → (WeatherNow) cached.data           [:289-290]
-       └─ 缓存未命中:
-           ├─ callApi(city, "base")                             [:295]
-           │    └─ resolveAdcode(city)                           [:326]
-           │         ├─ 内置 38 城市 adcode → 直接返回           [:329-330]
-           │         ├─ geocodeCache 命中 → 返回                 [:333-335]
-           │         └─ geocodeCity(city)                        [:338]
-           │              └─ GET https://restapi.amap.com/v3/geocode/geo
-           │                   ?address=city&key=xxx             [:352-355]
-           │              → 提取 adcode → 写入 geocodeCache      [:373-375]
-           └─ GET https://restapi.amap.com/v3/weather/weatherInfo
-                ?city=adcode&key=xxx&extensions=base             [:314-320]
-       └─ new CacheEntry(now, 5min) → responseCache.put          [:312]
-  2. 格式化报告 → saveQuery(userId, ..., "SUCCESS", elapsed)    [:184-186]
-
-buildForecastReport / buildMultiDayReport: 同上，extensions="all"
-```
+| 修复点 | 之前 | 之后 |
+|--------|------|------|
+| `fetchNow()` 8 字段 | 直接 `get().getAsXxx()` | `safeString()` / `safeDouble()` |
+| `fetchForecast()` 8 字段 | 直接 `get().getAsXxx()` | `safeString()` / `safeDouble()` |
+| API status/info 字段 | 直接 `get().getAsString()` | `safeString()` |
+| 地理编码 adcode 提取 | 链式 getAsXxx | `safeString()` |
+| `messageId` 传 null | `null` → MySQL 约束错误 | `""` + schema `DEFAULT ''` |
+| `forecasts.days.length` | 未检查 null | `forecasts.days == null` 检查 |
 
 #### WeatherAgent v2 核心优化
 
-| 优化项 | v1 (旧) | v2 (新) |
-|--------|---------|---------|
-| **城市覆盖** | 仅 38 个内置 adcode | 38 内置 + 高德地理编码 API 动态解析任意城市 |
-| **API 缓存** | 无 | 实时天气 5min TTL / 预报 30min TTL |
-| **DB 持久化** | 无 | 每次查询写入 `weather_query` 表 |
-| **城市提取** | 多段正则，顺序敏感 | 统一 CITY_WEATHER_PATTERN + 长名优先遍历 |
-| **管理接口** | 无 | evictCache(city) / evictAllCache() |
-
-#### 生命周期
-
-```
-[构造] WeatherAgent(BotProperties, IWeatherQueryService)
-
-[@PostConstruct] init()                                         [:135]
-   └─ log apiKey(脱敏) / baseUrl / builtinCities count
-
-[运行时]
-   ├─ execute(ctx) → 同步调用，返回 String 报告
-   ├─ generateReport(userId, text) → 供 CommandRegistry 直接调用
-   └─ fetchNow/fetchForecast → 缓存优先 → API 回退
-
-[销毁] 无特殊清理（ConcurrentHashMap 随 GC 回收，WeatherQuery 走 MyBatis-Plus）
-```
+| 优化项 | v2.1 (新) |
+|--------|---------|
+| **城市覆盖** | 38 内置 + 高德地理编码 API 动态解析 |
+| **API 缓存** | 实时天气 5min TTL / 预报 30min TTL |
+| **DB 持久化** | 每次查询写入 `weather_query` 表 |
+| **NPE 安全** | 全部 JSON 字段安全访问，容错默认值 |
+| **管理接口** | evictCache(city) / evictAllCache() |
 
 ---
 
-### 3.6 语音合成（VoiceGenAgent + TTSEngine）
+### 3.7 语音合成（VoiceGenAgent + TTSEngine）
 
-#### 示例
-
-```
-用户: 用语音朗读你好世界
-Bot:  正在生成语音："你好世界"...
-      [发送 WAV 音频文件]
-
-用户: 换萝莉音
-Bot:  音色已切换：龙小夏（活泼元气少女音）
-
-用户: 再读一遍你好世界
-Bot:  [用龙小夏音色朗读] → 发送 WAV
-```
-
-#### 完整调用链
-
-```
-═══════════ TTS 流程 ═══════════
-
-AgentRouter.route(ctx) → intent=TTS → VoiceGenAgent
-  └─ VoiceGenAgent.execute(ctx)
-       1. TextTool.extractTtsText(text)  # 剥离"用语音/朗读/播报"触发词
-       2. TimbreSession.getCurrentVoiceId(userId)  # 获取用户当前音色
-       3. TTSEngine.synthesize(text, voiceId)
-            └─ SpeechSynthesisParam.builder()
-                 .model("cosyvoice-v1").voice(voiceId).text(text)
-            └─ SpeechSynthesizer.call(param)
-            └─ AudioTranscoder.pcmToWav(pcmData, 16000, 16, 1)
-            └─ BotMetrics.recordTts(...)
-       4. ctx.sender().sendFile(userId, wavBytes, "tts.wav", text)
-
-═══════════ 音色切换流程 ═══════════
-
-AgentRouter.route(ctx) → intent=VOICE_SWITCH → VoiceGenAgent
-  └─ VoiceGenAgent.execute(ctx)
-       1. Timbre.matchKeyword(text)  # 匹配"萝莉/御姐/男声/..."
-       2. TimbreSession.switchTo(userId, timbre)
-       3. ChatPersistenceService.saveTimbreChange(...)
-       4. 若有剩余文本 → 继续 TTS 流程
-```
-
-#### 生命周期
-
-```
-[构造] VoiceGenAgent(TTSEngine, TimbreSession, ChatPersistenceService, BotProperties)
-
-[运行时] execute(ctx) — 同步 TTS 合成，约 1-3s
-   └─ TimbreSession 维护用户→音色映射，2h 无活动自动清除
-
-[销毁]
-   └─ TimbreSession: 定时清理线程 shutdown
-```
+略（与上一版本一致，详见 v1 文档）
 
 ---
 
-### 3.7 文件识别（FileAgent + FileRecognitionService）
+### 3.8 文件识别（FileAgent + FileRecognitionService）
 
-#### 示例
-
-```
-用户: [上传 Day3.docx]
-Bot:  收到文件「Day3.docx」（45.2 KB），正在分析…
-      【文件分析】Day3.docx（Word 文档 (.docx)，8.2 KB）
-
-      [AI 分析结果...]
-      
-      [后台异步: 切片 → Embedding → 向量索引 → 后续对话可 RAG 检索]
-```
-
-#### 完整调用链
-
-```
-AgentRouter.route(ctx) → ctx.hasFile()=true
-  └─ IntentClassifier.classify(ctx) → FILE                       [:87]
-       └─ AgentRouter → FileAgent
-
-FileAgent.execute(ctx)                                           [agent/file/FileAgent.java:33]
-  └─ executor.submit(() -> doFileRecognition(ctx))               [:34]
-
-doFileRecognition(ctx):                                          [:38]
-  └─ fileRecognitionService.recognize(userId, fileBytes, fileName) [:42]
-
-FileRecognitionService.recognize():                              [:67]
-  1. detectType(fileBytes, fileName)                             [:73]
-       └─ Tika.detect(InputStream, fileName)
-          ├─ 魔数优先（PDF → application/pdf）
-          └─ 后缀兜底（.docx → Word .docx）
-  2. 内容提取:                                                    [:78-91]
-       ├─ image/* → chatService.analyzeImage(bytes)              [:80]
-       └─ 其他   → extractTextWithTika(bytes)                    [:90]
-            └─ Tika.parseToString(InputStream)
-  3. AI 分析: analyzeWithAI(userId, ...)                         [:100]
-       └─ truncateForContext(text, 8000chars)                    [:250-253]
-       └─ chatService.analyzeDocument(userId, fileName, type, text, prompt)
-            └─ 截断 8000 字符 → 重试2次(2s/4s退避)               [:123-170]
-  4. 持久化 FileRecord → 获取 fileRecordId                        [:115-116]
-       └─ saveFileRecord(userId, fileName, size, mime, ...)      [:282-301]
-            └─ FileRecord 实体 → fileRecordService.save(rec) → rec.getId()
-  5. 异步 RAG: ragExecutor.submit(                               [:120-121]
-       () -> chunkAndEmbed(fileRecordId, userId, ...))
-       └─ DocumentChunkingService.chunk(text)                    [:137]
-            └─ 智能切片（按段落/句子边界）
-       └─ 存 DB: documentChunkService.save(chunk)                [:145]
-            └─ chunk.setFileRecordId(fileRecordId) ← 关联文件记录
-       └─ Embedding: embeddingService.embedBatch(texts)          [:152]
-            └─ DashScope text-embedding API
-       └─ 更新 embedding 字段: documentChunkService.updateById   [:162]
-       └─ 写入内存索引: vectorStoreService.storeDocumentChunk    [:169]
-  6. 返回 formatResponse(fileName, mimeType, aiResult, ...)     [:123]
-```
-
-#### FileRecord 持久化（v2 修复）
-
-```
-之前: FileRecord 从未保存到 DB，chunk.setFileRecordId(null) + schema NOT NULL → SQL 异常
-现在:
-  1. schema.sql: file_record_id BIGINT DEFAULT NULL（宽松约束）
-  2. recognize() 中同步保存 FileRecord → 获取 ID → 传给异步 RAG
-  3. chunkAndEmbed() 中 chunk.setFileRecordId(fileRecordId) ← 正确关联
-```
-
-#### 生命周期
-
-```
-[构造] FileAgent(FileRecognitionService)
-   └─ executor = Executors.newVirtualThreadPerTaskExecutor()
-
-[运行时] execute(ctx) → executor.submit(...) → 异步处理
-   └─ FileRecognitionService.recognize() 同步提取+分析（主线程）
-   └─ RAG 切片+Embedding 异步（vThread，不阻塞响应）
-
-[销毁] FileAgent.shutdown() — executor 关闭
-   FileRecognitionService: 无状态，Tika 线程安全
-   └─ ragExecutor 未显式关闭（虚拟线程，JVM 退出时自动清理）
-```
+略（与上一版本一致，详见 v1 文档）
 
 ---
 
-### 3.8 命令系统（CommandAgent + CommandRegistry）
+### 3.9 命令系统（CommandAgent + CommandRegistry）
 
 #### 示例
 
 ```
 用户: /help
-Bot:  【可用命令】
-      /draw <描述>     - AI 生成图片
-      /weather <城市>  - 查询天气
-      /tts <文本>      - 语音合成
-      /voice <编号>    - 切换音色(1-12)
-      /voice list      - 查看音色列表
-      /status          - 查看连接状态
-      /clear           - 清除对话历史
-      /cancel          - 取消待编辑图片
+Bot:  命令列表：
+      /draw <描述> /weather <城市> /tts <文本> /voice <编号>
+      /cy start /cy stop /cy ls ...
 
-用户: /voice list
-Bot:  【可用音色(共12种)】
-      1. 龙小春 - 温柔知性女声
-      2. 龙小夏 - 活泼元气少女音
-      ...
+用户: /cy start 龙飞凤舞
+Bot:  🎯 成语接龙开始！当前成语：「龙飞凤舞」
+      请说出一个以「舞」开头的成语
 ```
 
-#### 完整调用链
+#### 命令注册表（v2.1 更新）
+
+| 前缀 | 处理器 | 说明 |
+|------|--------|------|
+| `/draw ` | handleDraw | 文生图 |
+| `/weather ` | handleWeather | 天气查询 |
+| `/tts ` | handleTts | 语音合成 |
+| `/voice ` | handleVoice | 音色切换 |
+| `/help` | handleHelp | 帮助（含 /cy 命令） |
+| `/status` | handleStatus | 连接状态 |
+| `/clear` | handleClear | 清除记忆 |
+| `/cancel` | handleCancel | 取消图片编辑 |
+| `/cy ` | handleIdiomGame | **成语接龙**（start/stop/ls/help 子命令） |
+
+---
+
+### 3.10 全局异常拦截器（GlobalExceptionHandler）★ 新增
+
+未处理异常统一捕获格式化，防止裸堆栈暴露给用户。按异常类型分类，生成用户友好的中文提示 + 追踪 ID。
+
+#### 错误响应格式
 
 ```
-AgentRouter.route(ctx) → ctx.text()="/draw 一只猫"
-  └─ IntentClassifier.classify(ctx) → "/" 开头 → COMMAND         [:86]
-       └─ AgentRouter → CommandAgent
-
-CommandAgent.execute(ctx)                                        [agent/command/CommandAgent.java]
-  └─ CommandRegistry.execute(userId, cmd, sender, isRunning)
-
-CommandRegistry.execute():                                       [agent/command/CommandRegistry.java]
-  └─ LinkedHashMap 前缀遍历（注册顺序 = 匹配优先级）
-       ├─ cmd.startsWith("/draw ")    → handleDraw(...)
-       │    └─ ImageGenService.generateImageUrl(prompt)
-       │    └─ download + sendImage
-       ├─ cmd.startsWith("/weather ") → handleWeather(...)
-       │    └─ WeatherAgent.generateReport(userId, city + "天气")
-       ├─ cmd.startsWith("/tts ")     → handleTts(...)
-       │    └─ VoiceGenAgent.synthesizeWithDefaultVoice(text)
-       ├─ cmd.startsWith("/voice list") → handleVoiceList(...)
-       ├─ cmd.startsWith("/voice ")   → handleVoiceSwitch(...)
-       ├─ cmd.startsWith("/help")     → 返回帮助文本
-       ├─ cmd.startsWith("/status")   → 连接状态 + 音色状态
-       ├─ cmd.startsWith("/clear")    → ChatService.clearHistory + ImageCacheManager.removeSilently
-       │                               + ImageContextManager.clear + closeConversation
-       └─ cmd.startsWith("/cancel")   → ImageCacheManager.removeSilently
+【操作失败】
+──────────────
+错误类型：图片生成失败
+详情：AI 服务暂时不可用，请稍后重试
+时间：2026-07-24 15:30:00
+追踪ID：err-a1b2c3d4
+──────────────
+如需帮助，请输入 /help 查看可用命令
 ```
 
-#### 生命周期
+#### 异常分类
+
+| 异常类型 | 用户提示 | 日志级别 |
+|----------|---------|---------|
+| `AIServiceException(chat)` | AI 对话失败 | WARN |
+| `AIServiceException(analyzeImage)` | 图片识别失败 | WARN |
+| `ImageGenerationException(generate)` | 图片生成失败 | WARN |
+| `VoiceSynthesisException` | 语音生成失败 | WARN |
+| `FileRecognitionException` | 文件处理失败 | WARN |
+| `ConfigurationException` | 配置错误，请联系管理员 | ERROR |
+| 未知异常 | 系统内部异常，请稍后重试 | ERROR（含完整堆栈） |
+
+#### 调用链
 
 ```
-[构造] CommandAgent(CommandRegistry)
-
-CommandRegistry:
-  [构造] 9 个 Command → LinkedHashMap（按注册顺序前缀匹配）
-  依赖: ChatService, ImageCacheManager, ImageContextManager,
-        ImageGenService, VoiceGenAgent, WeatherAgent, ChatPersistenceService
-
-[运行时] execute(userId, cmd, sender, isRunning)
-   └─ 同步执行（轻量命令 <100ms，/draw 异步虚拟线程）
-
-[销毁] 无特殊清理
+AgentRouter.route(ctx)                                    [tools/AgentRouter.java:75]
+  └─ agent.execute(ctx)                                   [:100]
+       └─ try { ... }
+          catch (Exception e) {
+              exceptionHandler.handle(userId, sender, agent.name(), e)
+                → classify(e) → ErrorInfo(type, detail, severity)
+                → buildErrorMessage(info, operation, trackingId)
+                → sender.sendText(userId, formattedMessage)
+          }
 ```
 
 ---
 
-## 四、配置体系（v2 更新）
+## 四、配置体系（v2.1 更新）
 
 ### 4.1 配置分层
 
@@ -746,19 +659,10 @@ CommandRegistry:
 spring.ai.dashscope.chat.options.model:        qwen-plus
 spring.ai.dashscope.image.options.model:       wan2.5-t2i-preview
 spring.ai.dashscope.voice.tts.model:           cosyvoice-v1
-spring.ai.dashscope.voice.tts.voice:           longxiaochun
 
 # ── 超时 ──
-spring.ai.dashscope.connect-timeout: 30000    # 连接超时 30s
-spring.ai.dashscope.read-timeout:    300000   # 读取超时 5min
-# ⚠️ 以上属性仅配置 Spring AI 层，DashScope SDK 内建 OkHttpClient
-#    的超时由 HttpClientConfig.configureDashScopeSdkTimeouts() 强制注入
-
-# ── 系统提示词 ──
-spring.ai.system-prompt-path: classpath:prompts/system.txt
-
-# ── 图片编辑 ──
-bot.intent.image-edit-system-prompt: <编辑描述提示词>
+spring.ai.dashscope.connect-timeout: 30000
+spring.ai.dashscope.read-timeout:    300000
 
 # ── 缓存 ──
 bot.cache.pending-image-ttl-minutes:  5
@@ -767,55 +671,57 @@ bot.cache.cleanup-interval-minutes:   2
 bot.cache.image-context-ttl-minutes:  30
 bot.cache.max-image-context-entries:  200
 
-# ── 文件 ──
-bot.file.max-size-mb:  20
-
-# ── 天气 (高德开放平台) ──
+# ── 天气 ──
 bot.weather.api-key:  <key>
 bot.weather.base-url: https://restapi.amap.com/v3/weather/weatherInfo
-```
 
-### 4.3 DashScope SDK 超时注入（v2 新增）
-
-```java
-// HttpClientConfig.java — @PostConstruct
-// DashScope SDK 从 Constants.connectionConfigurations + 环境变量读取超时，
-// Spring 的 spring.ai.dashscope.read-timeout 不会传递到 SDK 层，
-// 必须在 @PostConstruct 中三层注入:
-
-1. System.setProperty("DASHSCOPE_READ_TIMEOUT", "300")   → 环境变量路径
-2. Constants.connectionConfigurations = builder()          → 全局配置替换（主方案）
-        .readTimeout(Duration.ofSeconds(300)).build()
-3. Constants.CONNECT_TIMEOUT = 30                          → 旧版 int 字段
+# ── 成语接龙（硬编码，无外部配置） ──
+# 超时: 5min  |  清理间隔: 2min  |  词典: ~590 条内置
 ```
 
 ---
 
-## 五、数据库设计（v2 更新）
+## 五、数据库设计（v2.1 更新）
 
 ### 5.1 表汇总
 
-| 表名 | 实体 | 主要用途 | v2 变更 |
+| 表名 | 实体 | 主要用途 | v2.1 变更 |
 |------|------|---------|---------|
 | `conversation` | Conversation | 会话生命周期管理 | — |
 | `message` | Message | 所有消息记录（核心表） | — |
-| `file_record` | FileRecord | 文件上传→提取→分析全链路追踪 | — |
+| `file_record` | FileRecord | 文件上传→提取→分析全链路 | — |
 | `image_context` | ImageRecord | 图片 CDN URL、描述、编辑指令 | — |
 | `timbre_change` | TimbreChange | 音色切换审计日志 | — |
-| `weather_query` | WeatherQuery | 天气查询记录 | **WeatherAgent v2 开始写入** |
-| `document_chunks` | DocumentChunk | RAG 文档切片 + embedding 向量 | `file_record_id` NOT NULL→NULL |
+| `weather_query` | WeatherQuery | 天气查询记录 | **message_id DEFAULT '' + NPE 安全** |
+| `idiom_game_record` | IdiomGameRecord | 成语接龙游戏积分 | **★ 新增** |
+| `document_chunks` | DocumentChunk | RAG 文档切片 + embedding | — |
 | `user_memory` | UserMemory | 用户长期记忆/偏好存储 | — |
 
-### 5.2 document_chunks 约束变更
+### 5.2 新增表
 
 ```sql
--- v1 (旧)
-file_record_id BIGINT NOT NULL,
-FOREIGN KEY (file_record_id) REFERENCES file_record(id) ON DELETE CASCADE
+-- 成语接龙游戏记录表
+CREATE TABLE idiom_game_record (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(128) NOT NULL,
+    score INT NOT NULL DEFAULT 0,
+    rounds INT NOT NULL DEFAULT 0,
+    end_reason VARCHAR(20) NOT NULL DEFAULT 'USER_STOP' COMMENT 'USER_WIN/USER_STOP/TIMEOUT',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_user_created (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
 
--- v2 (新)
-file_record_id BIGINT DEFAULT NULL,
-FOREIGN KEY (file_record_id) REFERENCES file_record(id) ON DELETE SET NULL
+### 5.3 weather_query 变更
+
+```sql
+-- v2.0 (旧)
+message_id VARCHAR(64) NOT NULL,
+-- → WeatherAgent.saveQuery() 传 null → MySQL 约束错误
+
+-- v2.1 (新)
+message_id VARCHAR(64) NOT NULL DEFAULT '',
+-- → WeatherAgent.saveQuery() 传 "" → 正常写入
 ```
 
 ---
@@ -826,7 +732,7 @@ FOREIGN KEY (file_record_id) REFERENCES file_record(id) ON DELETE SET NULL
 微信消息到达
       │
       ▼
-ILinkBotService.handleMessage(WeixinMessage)          [service/ILinkBotService.java:107]
+ILinkBotService.handleMessage(WeixinMessage)
       │
       ├─ VoiceMsg → 识别文本 → AgentContext(VOICE) ────┐
       ├─ TextMsg  → 去重检查 → AgentContext(TEXT) ──────┤
@@ -834,54 +740,59 @@ ILinkBotService.handleMessage(WeixinMessage)          [service/ILinkBotService.j
       └─ FileMsg  → 大小检查 → AgentContext(fileBytes) ─┘
                                           │
                                           ▼
-                                   AgentRouter.route(ctx)            [:64]
+                                   AgentRouter.route(ctx)
                                           │
+                              ┌───────────┴───────────┐
+                              │ 成语接龙拦截             │
+                              │ isUserInGame + 非/文本  │
+                              │ → IdiomGameService      │
+                              └───────────┬───────────┘
+                                          │ (非游戏/命令字符)
                                           ▼
-                               IntentClassifier.classify(ctx)       [:84]
+                               IntentClassifier.classify(ctx)
                                           │
                           ┌───────────────┼───────────────┐
-                          │ 快速路径      │ 正则快速路径    │ LLM 回退
-                          │ /→COMMAND     │ 前缀信号优先    │ qwen-turbo
+                          │ 层1 确定性规则  │ 层2 严格正则    │ 层3 LLM 默认
+                          │ /→COMMAND     │ +黑名单+校验    │ qwen-turbo
                           │ file→FILE     │ IMAGE_GEN      │ 失败→CHAT
                           │ image→IMG_EDIT│ IMAGE_EDIT     │
-                          │               │ TTS            │
-                          │               │ VOICE_SWITCH   │
-                          │               │ WEATHER(最后)  │
+                          │               │ TTS/VOICE/WEATHER│
                           └───────────────┴───────────────┘
                                           │
                                           ▼
-                              AgentRouter O(1) Map 查找              [:67]
+                              AgentRouter O(1) Map 查找
+                              try { agent.execute(ctx) }
+                              catch → GlobalExceptionHandler
                                           │
     ┌────────┬───────────┬───────────┬────┴──────┬──────────┬──────────┐
     ▼        ▼           ▼           ▼           ▼          ▼          ▼
  COMMAND   CHAT      IMAGE_GEN   IMAGE_EDIT    TTS       WEATHER    FILE
     │        │           │           │           │          │          │
 Command  ChatAgent  ImageGen  ImageRecog  VoiceGen   WeatherAgent FileAgent
- Agent   (qwen+)    Agent     Agent       Agent     (高德API v2) (Tika+AI)
+ Agent   (qwen+)    Agent     Agent       Agent     (高德v2.1)  (Tika+AI)
     │        │      (wan2.5) (qwen-vl+) (cosyvoice)     │          │
-    │        │           │      │            │          │    FileRecogService
-Command  ChatService ImageGen ChatService  TTSEngine   │     ├─ Tika提取
-Registry  ├─chat()  Service  ├─analyzeImage TimbreSession│    ├─ AI分析(重试)
-(前缀)    ├─RAG     ├─asyncCall ├─describeEdit            │     ├─ FileRecord持久化
-    │     ├─analyzeImage├─长轮询 │       │               │     └─ RAG切片+Embedding
-    │     ├─describeEdit│        │   ImageGenService      │
-    │     └─analyzeDoc │         │   (wan2.5)             │
-    │                  │         │       │                │
-    │            ImageContext  ImageCacheManager           │
-    │             Manager      (会话隔离+锁)              │
-    │                  │                                 │
-    └──────────────────┴─────────────────────────────────┘
+    │        │           │      │            │     safeString/  FileRecogSvc
+Command  ChatService ImageGen ChatService  TTSEngine safeDouble    │
+Registry  ├─chat()  Service  ├─analyzeImage            │     ├─Tika提取
+(/命令     ├─RAG    ├─asyncCall├─describeEdit           │     ├─AI(重试)
+ +/cy)    ├─analyze│─长轮询 │       │                  │     ├─FileRecord
+    │     └─doc    │        │   ImageGenService         │     └─RAG+Embed
+    │              │        │   (wan2.5)                │
+    │        ImageContext  ImageCacheManager       weather_query
+    │         Manager      (会话隔离+锁)           (message_id='')
+    │              │                                 │
+    └──────────────┴─────────────────────────────────┘
                              │
                    ctx.sender() 回传结果
                 (sendText / sendImage / sendFile)
                              │
                       ChatPersistenceService
-                      (消息/会话/音色/图片/文件/天气 入库)
+                  (消息/会话/音色/图片/文件/天气/游戏记录 入库)
 ```
 
 ---
 
-## 七、类依赖关系总图（v2）
+## 七、类依赖关系总图（v2.1）
 
 ```
 ILinkApplication (入口)
@@ -894,61 +805,64 @@ ILinkApplication (入口)
         │                      FileRecognitionService, WeatherAgent
         └── VoiceProperties ──→ TTSEngine
 
-HttpClientConfig (v2 新增 DashScope SDK 超时注入)
+HttpClientConfig
   ├── okHttpClient Bean ──→ ImageGenService.downloadImage()
   └── @PostConstruct configureDashScopeSdkTimeouts()
         └── Constants.connectionConfigurations ← 替换
-        └── System.setProperty(DASHSCOPE_*_TIMEOUT)
 
 ILinkBotService (核心入口，实现 MessageSender)
   └── AgentRouter
+        ├── IdiomGameService ──→ idiom game intercept [:77-86]
         ├── IntentClassifier ──→ intentChatClient (qwen-turbo)
+        │                        + ImageCacheManager (上下文校验)
+        ├── GlobalExceptionHandler ──→ 统一异常捕获 [:101-105]
         └── agentMap: EnumMap<Intent, Agent>
               ├── CHAT → ChatAgent
               │           ├── ChatService ──→ ChatClient (qwen-plus)
-              │           │   ├── chat() / chatWithRAG()
-              │           │   ├── analyzeImage() ──→ qwen-vl-plus
-              │           │   ├── describeImageEdit() ──→ qwen-vl-plus
-              │           │   └── analyzeDocument() ──→ 重试2次 + 截断8K
               │           ├── RAGRetrievalService ──→ VectorStoreService
               │           ├── VoiceGenAgent (VOICE上下文时TTS)
               │           └── ImageCacheManager
               ├── COMMAND → CommandAgent
-              │               └── CommandRegistry (9个命令, LinkedHashMap前缀匹配)
+              │               └── CommandRegistry (10个命令, LinkedHashMap)
+              │                    ├── handleDraw → ImageGenService
+              │                    ├── handleWeather → WeatherAgent
+              │                    ├── handleIdiomGame → IdiomGameService
+              │                    └── ...
               ├── IMAGE_GEN → ImageGenAgent
               │                 ├── ImageGenService ──→ DashScope wan2.5
-              │                 │   └── asyncCall + 180s长轮询
-              │                 ├── ImageContextManager ──→ TTL缓存
-              │                 └── @PreDestroy shutdown()
+              │                 └── ImageContextManager
               ├── IMAGE_EDIT → ImageRecognitionAgent
               │                  ├── ChatService ──→ qwen-vl-plus
               │                  ├── ImageGenService ──→ wan2.5
               │                  ├── ImageCacheManager ──→ 会话隔离+锁
-              │                  ├── ImageContextManager
-              │                  └── @PreDestroy shutdown() (v2新增)
+              │                  └── ImageContextManager
               ├── TTS → VoiceGenAgent
               │          ├── TTSEngine ──→ DashScope cosyvoice-v1
               │          └── TimbreSession (12音色, 2h TTL)
-              ├── WEATHER → WeatherAgent (v2)
-              │               ├── 38内置adcode + 高德地理编码API回退
-              │               ├── 内存TTL缓存 (now 5min / forecast 30min)
-              │               ├── IWeatherQueryService → MySQL weather_query表
-              │               └── Java HttpClient → 高德API
+              ├── WEATHER → WeatherAgent (v2.1)
+              │               ├── 38内置adcode + 高德地理编码API
+              │               ├── 内存TTL缓存 + safeString/safeDouble NPE安全
+              │               └── IWeatherQueryService → weather_query表
               └── FILE → FileAgent
                            └── FileRecognitionService
-                                 ├── Tika (MIME检测 + 文本提取)
-                                 ├── ChatService ──→ qwen-plus (重试2次)
-                                 ├── IFileRecordService → MySQL file_record表
-                                 ├── DocumentChunkingService → 智能切片
-                                 ├── EmbeddingService → DashScope embedding
-                                 ├── VectorStoreService → 内存余弦索引
-                                 └── IDocumentChunkService → MySQL document_chunks
+                                 ├── Tika + ChatService + DocumentChunkingService
+                                 └── EmbeddingService + VectorStoreService
+
+── IdiomGameService ★新增
+     ├── IdiomDictionary (Map<Character, List<String>> O(1)索引, ~590成语)
+     ├── ConcurrentHashMap<String, GameSession> (userId隔离)
+     ├── IIdiomGameRecordService → idiom_game_record表
+     └── ScheduledExecutorService (2min清理超时会话)
+
+── GlobalExceptionHandler ★新增
+     └── classify(Exception) → ErrorInfo(type, detail, severity)
+         → buildErrorMessage() → sender.sendText()
 
 ── ChatPersistenceService (持久化门面)
      ├── IConversationService / IMessageService / ITimbreChangeService
      ├── IImageRecordService / IFileRecordService / IWeatherQueryService
-     ├── IDocumentChunkService / IUserMemoryService
-     └── 8 个 ServiceImpl → 8 个 Mapper (MyBatis-Plus BaseMapper)
+     ├── IIdiomGameRecordService / IDocumentChunkService / IUserMemoryService
+     └── 9 个 ServiceImpl → 9 个 Mapper (MyBatis-Plus BaseMapper)
 
 ── BotMetrics (Micrometer指标)
      ├── TTS 成功/失败 + 耗时分布
@@ -959,28 +873,39 @@ ILinkBotService (核心入口，实现 MessageSender)
 
 ---
 
-## 八、架构设计亮点（v2 新增）
+## 八、架构设计亮点
 
-### 8.1 DashScope SDK 超时注入
+### 8.1 意图分类 v2.1：LLM 默认 + 正则短路 + 黑名单
 
-Spring AI 的 `spring.ai.dashscope.read-timeout` 无法传导到 DashScope SDK 内建的 OkHttpClient，导致长耗时调用（文档分析、图片生成）实际使用 ~30s 默认超时。`HttpClientConfig.configureDashScopeSdkTimeouts()` 在 `@PostConstruct` 阶段三层注入（系统属性 + 全局 Config 替换 + int 字段），确保所有 DashScope API 调用统一使用 300s read timeout。
+原有双层策略（正则优先 → LLM 回退）中正则命中率高但误判严重（"生成代码" → IMAGE_GEN，"修改配置" → IMAGE_EDIT）。v2.1 三层策略：
+1. **确定性规则**：`/` 命令、文件/图片消息（零延迟，100% 可靠）
+2. **严格正则短路**：仅匹配含明确图片名词+量词的生成请求、含图片指代词的编辑请求，且必须通过黑名单 + 上下文图片校验
+3. **LLM 默认路径**：其余所有请求交由 qwen-turbo 分类（约 200ms）
 
-### 8.2 图片编辑管线完整性
+### 8.2 成语接龙 O(1) + 独立会话
 
-v1 中 `ImageRecognitionAgent.handleImageEdit()` 是空壳（`return false`），用户上传图片后无法执行编辑。v2 实现了完整的 "多模态理解 + 文生图重绘" 管线：`peek 缓存 → qwen-vl-plus 理解 → wan2.5 生成 → 发送 → 清除缓存`，带 `lock/unlock` 串行化和 `@PreDestroy` 生命周期管理。
+`Map<Character, List<String>>` 首字索引实现 O(1) 词典查找与接龙候选。`ConcurrentHashMap<String, GameSession>` 确保多用户独立，`ScheduledExecutorService` 每 2 分钟清理超时会话（5 分钟无操作）。AgentRouter 最高优先级拦截游戏中非命令文本，确保零额外延迟。
 
-### 8.3 天气服务鲁棒性
+### 8.3 天气 NPE 安全
 
-v2 WeatherAgent 通过高德地理编码 API 动态解析任意城市 → adcode，打破 38 城市限制。TTL 缓存减少重复 API 调用（now 5min / forecast 30min）。每次查询同步写入 `weather_query` 表记录原始请求/响应/耗时。
+`safeString()` / `safeDouble()` 封装所有高德 API 返回字段访问，key 缺失或 value 为 null 时返回默认值而非抛 NPE。`message_id` 由 `null` 改为 `""` 并配合 schema `DEFAULT ''` 修复 MySQL 约束错误。
 
-### 8.4 文档分析可靠性
+### 8.4 全局异常拦截
 
-`ChatService.analyzeDocument()` 内部截断 8K 字符 + 指数退避重试 2 次（2s/4s），`FileRecognitionService` Tika 提取层也截断 8K，双层保护防止 token 爆炸/non-deterministic timeout。
+`AgentRouter.route()` 中 `agent.execute(ctx)` 包裹 `try-catch`，`GlobalExceptionHandler.classify()` 按异常类型（AIServiceException → 操作类型 / ImageGenerationException → stage / 未知 → 通用提示）格式化统一错误响应，含时间戳和追踪 ID。
 
-### 8.5 FileRecord 持久化完整性
+### 8.5 图片编辑管线完整性
 
-v1 中 `FileRecord` 从未保存到 DB，`chunk.setFileRecordId(null)` + `NOT NULL` 约束导致 SQL 异常。v2：schema 放宽为 `DEFAULT NULL` + `recognize()` 同步保存 FileRecord → 获取 ID → 传给异步 RAG 切片正确关联。
+完整 "多模态理解 + 文生图重绘" 管线：`peek 缓存 → qwen-vl-plus 理解 → wan2.5 生成 → 发送 → 清除缓存`，带 `lock/unlock` 串行化和上下文图片校验（无图片不回 IMAGE_EDIT）。
 
-### 8.6 正则快速路径优化
+### 8.6 DashScope SDK 超时注入
 
-移除 IMAGE_EDIT_RE 中 4 个高频单字（`改/换/变/加`），消除常见词误判（改变/变化/加油/更加 → 不再路由到 IMAGE_EDIT）。前缀强信号（IMAGE_GEN/IMAGE_EDIT/TTS）优先于关键词信号（WEATHER），防止"画一张天气图"误判。
+`HttpClientConfig.configureDashScopeSdkTimeouts()` 在 `@PostConstruct` 阶段三层注入（系统属性 + 全局 Config 替换 + int 字段），确保所有 DashScope API 调用统一使用 300s read timeout。
+
+### 8.7 文档分析可靠性
+
+`ChatService.analyzeDocument()` 截断 8K 字符 + 指数退避重试 2 次（2s/4s），`FileRecognitionService` Tika 提取层也截断 8K，双层保护防止 token 爆炸。
+
+### 8.8 正则快速路径优化
+
+移除 IMAGE_EDIT_RE 中单字词根（`改/换/变/加`），防止"改变/变化/加油"误判。IMAGE_GEN_RE 要求"量词+图片名词"组合（`画一张图`、`生成个头像`），拒绝孤立动词。IMAGE_EDIT_RE 要求明确图片指代词（`这张图`、`那个照片`）或上下文图片存在。

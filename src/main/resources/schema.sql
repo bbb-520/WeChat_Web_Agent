@@ -120,7 +120,7 @@ CREATE TABLE file_record (
 CREATE TABLE weather_query (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id VARCHAR(128) NOT NULL,
-    message_id VARCHAR(64) NOT NULL,
+    message_id VARCHAR(64) NOT NULL DEFAULT '',
     query_text VARCHAR(500) NOT NULL,
     city VARCHAR(100) NOT NULL,
     query_type VARCHAR(20) NOT NULL COMMENT 'now/forecast/multi-day',
@@ -132,6 +132,18 @@ CREATE TABLE weather_query (
     INDEX idx_user_id_created (user_id, created_at),
     INDEX idx_city (city),
     INDEX idx_message_id (message_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 成语接龙游戏记录表
+DROP TABLE IF EXISTS idiom_game_record;
+CREATE TABLE idiom_game_record (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(128) NOT NULL,
+    score INT NOT NULL DEFAULT 0,
+    rounds INT NOT NULL DEFAULT 0,
+    end_reason VARCHAR(20) NOT NULL DEFAULT 'USER_STOP' COMMENT 'USER_WIN/USER_STOP/TIMEOUT',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_user_created (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- RAG: 文档切片表（文件上传后经文本提取、智能切片、向量化后存入）
