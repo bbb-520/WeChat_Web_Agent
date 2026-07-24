@@ -132,8 +132,9 @@ public class ImageRecognitionAgent implements Agent {
             // 5) 保存到图片上下文（供后续迭代编辑使用）
             imageContextManager.save(userId, imageUrl, resultBytes);
 
-            // 6) 清除待编辑缓存（编辑完成，peek → remove）
+            // 6) 更新待编辑缓存为新图片（支持连续编辑）
             imageCacheManager.removeSilently(userId);
+            imageCacheManager.put(userId, resultBytes);
 
             // 7) 发送结果
             ctx.sender().sendImage(userId, resultBytes, "edited-image.png",

@@ -35,6 +35,7 @@ public class ImageGenAgent implements Agent {
 
     private final ImageGenService imageGenService;
     private final ImageContextManager imageContextManager;
+    private final ImageCacheManager imageCacheManager;
     private final ChatService chatService;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
@@ -86,6 +87,7 @@ public class ImageGenAgent implements Agent {
             byte[] bytes = imageGenService.downloadImage(url);
             if (bytes != null && bytes.length > 0) {
                 imageContextManager.save(userId, url, bytes);
+                imageCacheManager.put(userId, bytes);  // 存入待编辑缓存，支持后续编辑
                 ctx.sender().sendImage(userId, bytes, "ai-gen.png", prompt);
                 log.info("[IMAGE-GEN] 生成完成 | userId={} | size={}bytes", userId, bytes.length);
             } else {

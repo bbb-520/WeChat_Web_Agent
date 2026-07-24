@@ -95,6 +95,10 @@ public class AgentRouter {
 
         //通过意图获取Agent实例
         Agent agent = agentMap.get(intent);
+        // VOICE_SWITCH 与 TTS 共用 VoiceGenAgent
+        if (agent == null && intent == Intent.VOICE_SWITCH) {
+            agent = agentMap.get(Intent.TTS);
+        }
         if (agent == null) {
             agent = fallbackAgent;
         }
