@@ -13,7 +13,7 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.content.Media;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.tool.function.FunctionCallback;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
@@ -67,11 +67,11 @@ public class ChatService {
      * 带工具调用的对话 —— AgentLoop Think 阶段使用。
      * 直接传入消息列表和工具列表，LLM 返回完整 ChatResponse（含 tool calls）。
      */
-    public ChatResponse chatWithTools(List<Message> messages, List<FunctionCallback> tools) {
+    public ChatResponse chatWithTools(List<Message> messages, List<ToolCallback> tools) {
         try {
             return chatClient.prompt()
                     .messages(messages)
-                    .tools(tools)
+                    .toolCallbacks(tools)
                     .call()
                     .chatResponse();
         } catch (AIServiceException e) {
@@ -108,7 +108,7 @@ public class ChatService {
             var builder = chatClient.prompt().messages(messages);
             if (docs != null && !docs.isEmpty()) {
                 String ragContext = docs.stream()
-                        .map(Document::getContent)
+                        .map(Document::getText)
                         .collect(Collectors.joining("\n\n"));
                 builder.system(s -> s.text(chatSystemPrompt + "\n\n参考信息：\n" + ragContext));
             }

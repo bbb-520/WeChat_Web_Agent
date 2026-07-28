@@ -20,8 +20,8 @@
     <modules>
         <module>summer-common</module>
         <module>summer-aigc</module>
-        <module>summer-bot</module>
-        <module>summer-bootstrap</module>
+<!--        <module>summer-bot</module>-->
+<!--        <module>summer-bootstrap</module>-->
     </modules>
 
     <properties>

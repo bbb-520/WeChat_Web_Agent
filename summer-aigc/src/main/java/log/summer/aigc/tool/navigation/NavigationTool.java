@@ -648,8 +648,8 @@ public class NavigationTool {
         public enum CongestionLevel {
             UNKNOWN("未知", "⚪"), CLEAR("畅通", "🟢"), SLOW("缓行", "🟡"),
             CONGESTED("拥堵", "🟠"), SEVERE("严重拥堵", "🔴");
-            private final String label;
-            private final String icon;
+            final String label;
+            final String icon;
             CongestionLevel(String label, String icon) { this.label = label; this.icon = icon; }
             public static CongestionLevel fromAmap(int status) {
                 return switch (status) {
@@ -661,7 +661,7 @@ public class NavigationTool {
         }
         @Override
         public String toString() {
-            return level.icon + " " + roadName + " — " + level.label()
+            return level.icon + " " + roadName + " — " + level.label
                     + (speed > 0 ? "（" + String.format("%.0f", speed) + " km/h）" : "");
         }
     }

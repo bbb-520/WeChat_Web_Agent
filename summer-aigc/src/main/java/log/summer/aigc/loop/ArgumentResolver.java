@@ -2,6 +2,7 @@ package log.summer.aigc.loop;
 
 import log.summer.aigc.port.BotMessage;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
 import java.util.*;
 
@@ -17,6 +18,7 @@ import java.util.*;
  * </ul>
  */
 @Slf4j
+@Component
 public class ArgumentResolver {
 
     private static final String IMAGE_PLACEHOLDER = "${message.image}";
