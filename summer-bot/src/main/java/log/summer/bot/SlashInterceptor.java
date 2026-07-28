@@ -5,6 +5,7 @@ import log.summer.aigc.port.MessageSender;
 import log.summer.aigc.tool.BotMetrics;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Component;
 public class SlashInterceptor {
 
     private final BotMetrics botMetrics;
+    private final ChatMemory chatMemory;
 
     /**
      * @return true if intercepted (message consumed), false to forward to AgentLoop
@@ -57,8 +59,8 @@ public class SlashInterceptor {
                         """, stats.uptime(), stats.messageCount(), stats.errorCount()));
             }
             case "/cancel" -> {
+                chatMemory.clear(userId);
                 sender.sendText(userId, "当前会话已取消。开始新的对话吧！");
-                // AgentLoop will clear ChatMemory on termination
             }
             default -> {
                 if (text.startsWith("/")) {

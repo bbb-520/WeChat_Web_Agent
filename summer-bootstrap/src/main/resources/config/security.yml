@@ -1,2 +1,6 @@
 # Security keys — gitignored. Fill in your actual keys.
 # Copy from existing config/security.yml
+
+bot:
+  weather:
+    api-key: af03c8e761def785546a01e202337bce

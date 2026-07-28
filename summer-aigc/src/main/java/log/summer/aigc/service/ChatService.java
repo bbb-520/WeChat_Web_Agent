@@ -70,6 +70,7 @@ public class ChatService {
     public ChatResponse chatWithTools(List<Message> messages, List<ToolCallback> tools) {
         try {
             return chatClient.prompt()
+                    .system(chatSystemPrompt)
                     .messages(messages)
                     .toolCallbacks(tools)
                     .call()
@@ -88,6 +89,7 @@ public class ChatService {
     public ChatResponse chat(List<Message> messages) {
         try {
             return chatClient.prompt()
+                    .system(chatSystemPrompt)
                     .messages(messages)
                     .call()
                     .chatResponse();

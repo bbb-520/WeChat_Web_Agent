@@ -26,10 +26,6 @@ public record ThinkResult(String finalAnswer, List<ToolCall> toolCalls) {
         return toolCalls != null && !toolCalls.isEmpty();
     }
 
-    /**
-     * Parse Spring AI ChatResponse into ThinkResult.
-     * Extracts both text content and any function calls from the first generation.
-     */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /**

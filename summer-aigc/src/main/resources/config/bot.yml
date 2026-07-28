@@ -20,5 +20,5 @@ bot:
     system-prompt-path: classpath:prompts/file-system.txt
 
   weather:
-    api-key: af03c8e761def785546a01e202337bce
+    # api-key: <see security.yml>
     base-url: https://restapi.amap.com/v3/weather/weatherInfo
