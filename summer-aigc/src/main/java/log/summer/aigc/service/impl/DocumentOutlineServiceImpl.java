@@ -35,16 +35,23 @@ public class DocumentOutlineServiceImpl
         DocumentOutline outline = getById(outlineId);
         if (outline == null) return false;
 
-        int newVersion = (outline.getVersion() == null ? 0 : outline.getVersion()) + 1;
+        int currentVersion = outline.getVersion() == null ? 0 : outline.getVersion();
+        int newVersion = currentVersion + 1;
 
-        return lambdaUpdate()
-                .set(DocumentOutline::getOutlineData, modifiedOutlineData)
-                .set(DocumentOutline::getStatus,
-                        modifiedOutlineData != null ? "MODIFIED" : "CONFIRMED")
+        var update = lambdaUpdate()
                 .set(DocumentOutline::getVersion, newVersion)
                 .set(DocumentOutline::getUpdatedAt, LocalDateTime.now())
                 .eq(DocumentOutline::getId, outlineId)
-                .update();
+                .eq(DocumentOutline::getVersion, currentVersion);
+
+        if (modifiedOutlineData != null) {
+            update.set(DocumentOutline::getOutlineData, modifiedOutlineData);
+            update.set(DocumentOutline::getStatus, "MODIFIED");
+        } else {
+            update.set(DocumentOutline::getStatus, "CONFIRMED");
+        }
+
+        return update.update();
     }
 
     @Override
