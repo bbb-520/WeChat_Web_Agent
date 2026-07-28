@@ -84,6 +84,12 @@
                 <artifactId>wechat-ilink-sdk</artifactId>
                 <version>${ilink-sdk.version}</version>
             </dependency>
+            <!-- Gson -->
+            <dependency>
+                <groupId>com.google.code.gson</groupId>
+                <artifactId>gson</artifactId>
+                <version>2.10.1</version>
+            </dependency>
             <!-- Lombok -->
             <dependency>
                 <groupId>org.projectlombok</groupId>
