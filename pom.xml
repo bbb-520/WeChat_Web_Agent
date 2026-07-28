@@ -33,6 +33,7 @@
         <tika.version>2.9.4</tika.version>
         <ilink-sdk.version>2.3.3</ilink-sdk.version>
         <jsonschema-generator.version>4.37.0</jsonschema-generator.version>
+        <poi.version>5.2.5</poi.version>
     </properties>
 
     <dependencyManagement>
@@ -96,6 +97,12 @@
                 <artifactId>lombok</artifactId>
                 <version>${lombok.version}</version>
                 <scope>provided</scope>
+            </dependency>
+            <!-- Apache POI for Office document generation -->
+            <dependency>
+                <groupId>org.apache.poi</groupId>
+                <artifactId>poi-ooxml</artifactId>
+                <version>${poi.version}</version>
             </dependency>
             <!-- JSON Schema Generator -->
             <dependency>

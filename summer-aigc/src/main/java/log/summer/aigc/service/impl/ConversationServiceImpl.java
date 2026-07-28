@@ -65,4 +65,35 @@ public class ConversationServiceImpl
     public Conversation getByConvId(Long convId) {
         return getById(convId);
     }
+
+    @Override
+    public Conversation getSuspendedByUser(String userId) {
+        return getOne(new LambdaQueryWrapper<Conversation>()
+                .eq(Conversation::getUserId, userId)
+                .eq(Conversation::getStatus, 2)
+                .orderByDesc(Conversation::getCreatedAt)
+                .last("LIMIT 1"));
+    }
+
+    @Override
+    public void updateSuspend(Long convId, String suspendContext, String suspendReason) {
+        lambdaUpdate()
+                .set(Conversation::getStatus, 2)
+                .set(Conversation::getSuspendContext, suspendContext)
+                .set(Conversation::getSuspendReason, suspendReason)
+                .set(Conversation::getUpdatedAt, LocalDateTime.now())
+                .eq(Conversation::getId, convId)
+                .update();
+    }
+
+    @Override
+    public void clearSuspend(Long convId) {
+        lambdaUpdate()
+                .set(Conversation::getStatus, 1)
+                .set(Conversation::getSuspendContext, null)
+                .set(Conversation::getSuspendReason, null)
+                .set(Conversation::getUpdatedAt, LocalDateTime.now())
+                .eq(Conversation::getId, convId)
+                .update();
+    }
 }

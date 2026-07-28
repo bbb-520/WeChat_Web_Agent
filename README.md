@@ -1,7 +1,7 @@
 # 微信 iLink 多模态 AI 机器人 — 项目文档
 
-> **更新日期:** 2026-07-28 | **作者:** bbb | **分支:** main | **架构:** 多模块 + 双循环 Agent（ReAct）
-> **模块:** `summer-common` · `summer-aigc` · `summer-bot` · `summer-bootstrap`
+> **更新日期:** 2026-07-29 | **作者:** bbb | **架构:** 多模块 + 双循环 Agent（ReAct）+ 文档生成（Word/PPT/Excel）
+> **模块:** `summer-common` · `summer-aigc` · `summer-bot` · `summer-bootstrap` | **DB 表:** 13 张
 
 ---
 
@@ -20,6 +20,20 @@
 能力覆盖：**AI 多轮对话（三级记忆）、文生图 / 图片识别 / 图片编辑、语音合成（12 音色）、文件识别（Tika+AI+RAG）、天气查询（高德）、成语接龙、路线导航 / 路况、内存监控、定时提醒、全局异常拦截** 等。
 
 > 历史说明：此前使用 `IntentClassifier`（qwen-turbo）+ `AgentRouter` 的「一次性派发」模型，已于 2026-07-28 重构为上述双循环 + 工具调用模型，原 `IntentClassifier` / `AgentRouter` / `CommandAgent` 等类已移除，相关设计见 `docs/superpowers/`。
+
+## Features
+
+### Agent Engine
+- **Dual-loop Agent** — ReAct (Reasoning + Acting) orchestrator with think-act cycles
+- **Suspend/Resume** — Agent can pause mid-task waiting for user confirmation, survive service restarts
+- **Session State Persistence** — Full conversation context saved to DB on suspend, restored on next message
+- **Multi-tool Chain** — Tools can be chained naturally: query -> outline -> confirm -> generate document
+
+### Document Generation
+- **Outline Generation** (`createOutline`) — AI generates structured outlines for Word/PPT/Excel, persists to DB
+- **User Confirmation Flow** — Outline presented to user for review; Agent waits for confirmation or modifications
+- **Document Rendering** (`generateDocument`) — Apache POI renders confirmed outlines into .docx/.pptx/.xlsx files
+- **Idempotency** — Same outline+type+version returns cached result, no duplicate generation
 
 ### 1.2 技术栈
 

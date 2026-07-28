@@ -21,4 +21,13 @@ public interface IConversationService extends IService<Conversation> {
 
     /** 查询指定会话 */
     Conversation getByConvId(Long convId);
+
+    /** Query the latest suspended conversation for a user. */
+    Conversation getSuspendedByUser(String userId);
+
+    /** Persist suspend context and set status=2. */
+    void updateSuspend(Long convId, String suspendContext, String suspendReason);
+
+    /** Clear suspend state and set status back to 1 (active). */
+    void clearSuspend(Long convId);
 }
