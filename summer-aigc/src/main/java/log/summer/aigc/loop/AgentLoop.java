@@ -168,11 +168,28 @@ public class AgentLoop {
                             break; // exit tool-call loop
                         }
 
-                        // ── Normal result handling (existing logic) ──
-                        String resultText = result.success()
-                                ? (result.data() != null ? result.data().toString()
-                                        : "success")
-                                : "ERROR: " + result.errorMessage();
+                        // ── Normal result handling ──
+                        String resultText;
+                        if (result.success() && result.data() instanceof Map<?, ?> dataMap) {
+                            // Check if the tool produced a file for delivery
+                            Object fileBytes = dataMap.get("fileBytes");
+                            Object fileName = dataMap.get("fileName");
+                            if (fileBytes instanceof byte[] bytes && fileName instanceof String name) {
+                                log.info("[AGENT-LOOP] 下发文件 | userId={} | fileName={} | size={}bytes",
+                                        userId, name, bytes.length);
+                                sender.sendFile(userId, bytes, name, "生成的文档");
+                            }
+
+                            // Build a text summary for the LLM (exclude binary data)
+                            @SuppressWarnings({"unchecked", "rawtypes"})
+                            Map<String, Object> llmView = new java.util.LinkedHashMap<>((Map) dataMap);
+                            llmView.remove("fileBytes");
+                            resultText = llmView.toString();
+                        } else {
+                            resultText = result.success()
+                                    ? (result.data() != null ? result.data().toString() : "success")
+                                    : "ERROR: " + result.errorMessage();
+                        }
 
                         String callId = UUID.randomUUID().toString();
                         var toolResponse = new ToolResponseMessage.ToolResponse(
@@ -314,10 +331,28 @@ public class AgentLoop {
                             break;
                         }
 
-                        String resultText = result.success()
-                                ? (result.data() != null ? result.data().toString()
-                                        : "success")
-                                : "ERROR: " + result.errorMessage();
+                        // ── Normal result handling ──
+                        String resultText;
+                        if (result.success() && result.data() instanceof Map<?, ?> dataMap) {
+                            // Check if the tool produced a file for delivery
+                            Object fileBytes = dataMap.get("fileBytes");
+                            Object fileName = dataMap.get("fileName");
+                            if (fileBytes instanceof byte[] bytes && fileName instanceof String name) {
+                                log.info("[AGENT-LOOP] 下发文件 | userId={} | fileName={} | size={}bytes",
+                                        userId, name, bytes.length);
+                                sender.sendFile(userId, bytes, name, "生成的文档");
+                            }
+
+                            // Build a text summary for the LLM (exclude binary data)
+                            @SuppressWarnings({"unchecked", "rawtypes"})
+                            Map<String, Object> llmView = new java.util.LinkedHashMap<>((Map) dataMap);
+                            llmView.remove("fileBytes");
+                            resultText = llmView.toString();
+                        } else {
+                            resultText = result.success()
+                                    ? (result.data() != null ? result.data().toString() : "success")
+                                    : "ERROR: " + result.errorMessage();
+                        }
 
                         String callId = UUID.randomUUID().toString();
                         var toolResponse = new ToolResponseMessage.ToolResponse(

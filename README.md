@@ -1,6 +1,6 @@
 # 微信 iLink 多模态 AI 机器人 — 项目文档
 
-> **更新日期:** 2026-07-24 | **作者:** bbb | **分支:** main | **文件数:** 82 Java 源文件 + 11 张 DB 表
+> **更新日期:** 2026-07-29 | **作者:** bbb | **分支:** main | **文件数:** 85+ Java 源文件 + 13 张 DB 表
 
 ---
 
@@ -9,6 +9,20 @@
 ### 1.1 简介
 
 基于 **Spring Boot 3.2 + Java 21** 的微信 iLink 多模态 AI 机器人。通过 `wechat-ilink-sdk` 接入微信客户端，支持 **AI 对话（三级记忆）、图片生成/编辑、语音合成（12 音色）、文件识别（Tika+AI+RAG）、天气查询（高德 API）、成语接龙（O(1) 词典）、路线导航（4 种出行方式）、内存监控（JVM 指标+趋势）、定时提醒（调度+回调）、历史记录查询（DB 会话检索）、全局异常拦截** 等 15 项功能。
+
+## Features
+
+### Agent Engine
+- **Dual-loop Agent** — ReAct (Reasoning + Acting) orchestrator with think-act cycles
+- **Suspend/Resume** — Agent can pause mid-task waiting for user confirmation, survive service restarts
+- **Session State Persistence** — Full conversation context saved to DB on suspend, restored on next message
+- **Multi-tool Chain** — Tools can be chained naturally: query -> outline -> confirm -> generate document
+
+### Document Generation
+- **Outline Generation** (`createOutline`) — AI generates structured outlines for Word/PPT/Excel, persists to DB
+- **User Confirmation Flow** — Outline presented to user for review; Agent waits for confirmation or modifications
+- **Document Rendering** (`generateDocument`) — Apache POI renders confirmed outlines into .docx/.pptx/.xlsx files
+- **Idempotency** — Same outline+type+version returns cached result, no duplicate generation
 
 ### 1.2 技术栈
 
