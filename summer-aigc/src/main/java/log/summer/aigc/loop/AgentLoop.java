@@ -50,7 +50,6 @@ public class AgentLoop {
 
     private static final int MAX_ITERATIONS = 10;
     private static final long TIMEOUT_SECONDS = 120;
-    private static final String DEFAULT_CONVERSATION_ID = "default";
 
     /**
      * Orchestrate a single user message through the think-act loop.
@@ -60,20 +59,20 @@ public class AgentLoop {
      */
     public void orchestrate(BotMessage msg, MessageSender sender) {
         String userId = msg.userId();
-        String conversationId = DEFAULT_CONVERSATION_ID;
 
         Instant start = Instant.now();
         int round = 0;
+        boolean finalAnswerSent = false;
 
         // ── Add user message to memory ──
         if (msg.hasText()) {
-            chatMemory.add(conversationId,
+            chatMemory.add(userId,
                     new UserMessage(msg.text()));
         } else if (msg.hasImage()) {
-            chatMemory.add(conversationId,
+            chatMemory.add(userId,
                     new UserMessage("[用户发送了一张图片]"));
         } else if (msg.hasFile()) {
-            chatMemory.add(conversationId,
+            chatMemory.add(userId,
                     new UserMessage("[用户发送了文件: " + msg.fileName() + "]"));
         }
 
@@ -92,7 +91,7 @@ public class AgentLoop {
                 // ── THINK ──
                 // Build message list from ChatMemory
                 List<Message> messages = new ArrayList<>(
-                        chatMemory.get(conversationId));
+                        chatMemory.get(userId));
 
                 var chatResponse = chatService.chatWithTools(
                         messages,
@@ -103,6 +102,7 @@ public class AgentLoop {
                 // ── Final answer (no tool calls) → exit ──
                 if (think.hasFinalAnswer() && !think.hasToolCalls()) {
                     sender.sendText(userId, think.finalAnswer());
+                    finalAnswerSent = true;
                     log.debug("[AGENT-LOOP] 最终答案 | userId={} | rounds={}", userId, round);
                     break;
                 }
@@ -110,6 +110,7 @@ public class AgentLoop {
                 // ── Final answer + tool calls (LLM can return both) ──
                 if (think.hasFinalAnswer() && think.hasToolCalls()) {
                     sender.sendText(userId, think.finalAnswer());
+                    finalAnswerSent = true;
                 }
 
                 // ── ACT: execute tool calls ──
@@ -139,7 +140,7 @@ public class AgentLoop {
                         String callId = UUID.randomUUID().toString();
                         var toolResponse = new ToolResponseMessage.ToolResponse(
                                 callId, toolCall.name(), resultText);
-                        chatMemory.add(conversationId,
+                        chatMemory.add(userId,
                                 new ToolResponseMessage(List.of(toolResponse)));
 
                         log.debug("[AGENT-LOOP] 工具结果 | userId={} | tool={} | success={}",
@@ -155,8 +156,8 @@ public class AgentLoop {
                 break;
             }
 
-            // ── Max iterations exceeded ──
-            if (round >= MAX_ITERATIONS) {
+            // ── Max iterations exceeded (only if no final answer was already sent) ──
+            if (!finalAnswerSent && round >= MAX_ITERATIONS) {
                 log.warn("[AGENT-LOOP] 达到最大迭代次数 | userId={}", userId);
                 sender.sendText(userId,
                         "我暂时无法完成这个任务，请稍后再试。");
@@ -167,7 +168,7 @@ public class AgentLoop {
             exceptionHandler.handle(userId, sender, "AgentLoop", e);
         } finally {
             // Clear conversation memory so the next message starts fresh
-            chatMemory.clear(conversationId);
+            chatMemory.clear(userId);
         }
     }
 }
