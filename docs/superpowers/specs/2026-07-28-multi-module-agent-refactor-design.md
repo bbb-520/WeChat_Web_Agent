@@ -28,7 +28,7 @@ summer-dev/                    ← 父 POM (<packaging>pom), <dependencyManageme
 │
 ├── summer-common/             ← 零依赖工具包（无 Spring）
 │   └── log.summer.common/
-│       ├── exception/         ← 抽象异常基类
+│       ├── exception/         ← 抽象异常基类（NOT GlobalExceptionHandler — it depends on MessageSender）
 │       ├── enums/             ← Timbre, RouteContext 等
 │       ├── constant/          ← 常量
 │       ├── util/              ← 纯工具类
