@@ -114,7 +114,7 @@ summer-aigc/src/main/java/log/summer/aigc/
     BotMetrics.java                ← moved from tools
   config/ai.yml                    ← moved from resources/config
   config/bot.yml                   ← moved from resources/config
-  db/migration/V1__initial_schema.sql  ← NEW: Flyway baseline (contents of schema.sql)
+  db/migration/summer_bot.sql  ← NEW: Flyway baseline (contents of schema.sql)
 ```
 
 ### summer-bot (transport adapters)

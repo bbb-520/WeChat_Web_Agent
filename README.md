@@ -1,6 +1,7 @@
 # 微信 iLink 多模态 AI 机器人 — 项目文档
 
-> **更新日期:** 2026-07-24 | **作者:** bbb | **分支:** main | **文件数:** 82 Java 源文件 + 11 张 DB 表
+> **更新日期:** 2026-07-28 | **作者:** bbb | **分支:** main | **架构:** 多模块 + 双循环 Agent（ReAct）
+> **模块:** `summer-common` · `summer-aigc` · `summer-bot` · `summer-bootstrap`
 
 ---
 
@@ -8,7 +9,17 @@
 
 ### 1.1 简介
 
-基于 **Spring Boot 3.2 + Java 21** 的微信 iLink 多模态 AI 机器人。通过 `wechat-ilink-sdk` 接入微信客户端，支持 **AI 对话（三级记忆）、图片生成/编辑、语音合成（12 音色）、文件识别（Tika+AI+RAG）、天气查询（高德 API）、成语接龙（O(1) 词典）、路线导航（4 种出行方式）、内存监控（JVM 指标+趋势）、定时提醒（调度+回调）、历史记录查询（DB 会话检索）、全局异常拦截** 等 15 项功能。
+基于 **Spring Boot 3.2 + Java 21** 的微信 iLink 多模态 AI 机器人。项目已重构为 **4 个 Maven 模块**，并通过 `wechat-ilink-sdk` 接入微信客户端。
+
+重构后的核心是一个 **双循环 ReAct Agent 引擎**（`AgentLoop`）：
+
+- **THINK**：调用大模型（qwen-plus）+ 全部工具清单（`@Tool` 函数），由模型自主决策调用哪些工具；
+- **ACT**：执行工具并把结果回灌给模型，进入下一轮思考；
+- 循环最多 **10 轮 / 120 秒** 安全阀后终止。
+
+能力覆盖：**AI 多轮对话（三级记忆）、文生图 / 图片识别 / 图片编辑、语音合成（12 音色）、文件识别（Tika+AI+RAG）、天气查询（高德）、成语接龙、路线导航 / 路况、内存监控、定时提醒、全局异常拦截** 等。
+
+> 历史说明：此前使用 `IntentClassifier`（qwen-turbo）+ `AgentRouter` 的「一次性派发」模型，已于 2026-07-28 重构为上述双循环 + 工具调用模型，原 `IntentClassifier` / `AgentRouter` / `CommandAgent` 等类已移除，相关设计见 `docs/superpowers/`。
 
 ### 1.2 技术栈
 
@@ -16,10 +27,11 @@
 |------|------|
 | Java 21 | 虚拟线程、Record、Switch 表达式、Pattern Matching |
 | Spring Boot 3.2.10 | IoC/DI、Actuator、@ConfigurationProperties |
-| Spring AI (DashScope) | ChatClient、ChatMemory（滑动窗口 20 条）、MessageChatMemoryAdvisor |
+| Spring AI Alibaba DashScope | ChatClient、`@Tool` 函数调用、MessageWindowChatMemory |
 | MyBatis-Plus 3.5.7 | ORM、LambdaQueryWrapper、BaseMapper |
-| MySQL 8.x | 11 张表、utf8mb4 |
-| AI 模型 | qwen-turbo（意图分类）、qwen-plus（对话/文档）、qwen-vl-plus（多模态）、wan2.5-t2i-preview（文生图）、cosyvoice-v1（TTS） |
+| Flyway | 数据库版本化迁移（取代原 `schema.sql` always-init） |
+| MySQL 8.x | 9+ 张表、utf8mb4 |
+| AI 模型 | qwen-plus（对话/文档）、qwen-vl-plus（多模态）、wan2.5-t2i-preview（文生图）、cosyvoice-v1（TTS）、paraformer-v2（ASR） |
 | 高德开放平台 | 天气 API + 路线规划 API + 地理编码 API + 实时路况 API |
 | wechat-ilink-sdk 2.3.3 | 微信消息收发、图片/文件 CDN 下载 |
 | Apache Tika 2.9.4 | MIME 检测 + 文本提取 |
@@ -27,646 +39,239 @@
 | OkHttp 4.x | HTTP 连接池 |
 | Micrometer + Actuator | /actuator/metrics, /actuator/health |
 
-### 1.3 整体架构
+### 1.3 多模块架构
+
+依赖方向单向、无环：`summer-bootstrap → summer-bot → summer-aigc → summer-common`。
 
 ```
-微信消息到达
-      │
-      ▼
-ILinkBotService.handleMessage(WeixinMessage)
-  ├─ VoiceItem → ASR 提取文本 → RouteContext.VOICE
-  ├─ TextItem  → RouteContext.TEXT
-  ├─ ImageItem → CDN 下载 → imageBytes
-  └─ FileItem  → 大小校验 → CDN 下载 → fileBytes
-      │
-      ▼
-AgentRouter.route(ctx)                           ← 核心路由
-  ├─ 成语接龙拦截: isUserInGame + 非/文本 → IdiomGameService
-  │
-  ├─ IntentClassifier.classify(ctx)              ← 意图分类 (v2.3)
-  │   ├─ 确定性规则: /→COMMAND | 图片→IMAGE_EDIT | 文件→FILE (零延迟)
-  │   └─ LLM: qwen-turbo 单次 JSON 调用 → CHAT/IMAGE_GEN/WEATHER/TTS/... (~150ms)
-  │
-  └─ agentMap.get(intent).execute(ctx)           ← O(1) Map 路由
-      └─ try-catch → GlobalExceptionHandler
-      │
-  ┌───┼──────────┬──────────┬──────────┬──────────┬──────────┐
-  ▼   ▼          ▼          ▼          ▼          ▼          ▼
-Chat  Command  Weather  Image Gen/ Voice Gen File    Idiom Game
-Agent Agent    Agent    Edit Agent Agent    Agent   Service
-  │
-  ├─ ChatMemory (20条滑动窗口)                   ← 短期记忆
-  ├─ message 表 DB 历史注入 prompt               ← 会话记忆
-  └─ user_memory 表检索                          ← 长期记忆
+┌──────────────────────────────────────────────────────────────────┐
+│  summer-bootstrap  (启动 + 装配)                                    │
+│  SummerApplication · application.yml · config/{ai,bot,security}.yml │
+└───────────────────────────────┬──────────────────────────────────┘
+                                 │ 依赖
+                                 ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  summer-bot  (传输适配器)                                          │
+│  ILinkBotAdapter · SlashInterceptor · RetrySender                  │
+└───────────────────────────────┬──────────────────────────────────┘
+                                 │ 依赖
+                                 ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  summer-aigc  (Agent 核心引擎)                                      │
+│  AgentLoop · ToolRegistry · @Tool×11 · RAG · entity/mapper/service │
+│  port: BotInboundPort / BotMessage / MessageSender                 │
+└───────────────────────────────┬──────────────────────────────────┘
+                                 │ 依赖
+                                 ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  summer-common  (零依赖工具包)                                      │
+│  exception/ · enums/ · constant/ · prompts/                        │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.4 核心功能一览
+### 1.4 双循环 Agent 引擎（核心流程）
 
-| # | 功能 | 组件 | 触发方式 |
-|---|------|------|---------|
-| 1 | 意图分类 | IntentClassifier v2.3 | 每条消息自动触发 |
-| 2 | AI 多轮对话（三级记忆） | ChatAgent + ChatService | 自然语言 / VOICE 上下文 |
-| 3 | 命令系统 | CommandAgent + CommandRegistry | `/` 前缀（17 条命令） |
-| 4 | 文生图 | ImageGenAgent + ImageGenService | 自然语言 / `/draw` |
-| 5 | 图片识别 & 编辑 | ImageRecognitionAgent | 上传图片 / 编辑指令 |
-| 6 | 语音合成 | VoiceGenAgent + TTSEngine | 自然语言 / `/tts` |
-| 7 | 音色切换 | VoiceGenAgent + TimbreSession | 自然语言 / `/voice` |
-| 8 | 天气查询 | WeatherAgent v2.1 | 自然语言 / `/weather` |
-| 9 | 文件识别 | FileAgent + FileRecognitionService | 上传文件 |
-| 10 | 成语接龙 | IdiomGameService | `/cy start/stop/ls` |
-| 11 | 历史记录查询 | HistoryService | `/history [id/all]` |
-| 12 | 内存监控 | MemoryMonitorTools | `/memory [diff/simple/history]` |
-| 13 | 路线导航 | NavigationTools | `/nav 从A到B [方式]` |
-| 14 | 路况查询 | NavigationTools | `/traffic 道路名` |
-| 15 | 定时提醒 | ReminderTools | `/remind 时间 内容` |
-| — | 全局异常拦截 | GlobalExceptionHandler | Agent 未捕获异常 |
+```
+用户消息到达 ILinkBotAdapter.onMessage(BotMessage)
+      │
+      ▼
+SlashInterceptor.intercept(msg, sender)        ← /help /status /cancel 在此拦截
+  ├─ 命中 → 直接回复，不进入 AgentLoop
+  └─ 未命中 → AgentLoop.orchestrate(msg, sender)
+                  │
+                  ▼
+        while (round < 10 && !timeout 120s):
+          ┌─────────────────────────────────────────────┐
+          │ THINK:                                       │
+          │   ChatService.chatWithTools(messages,        │
+          │       ToolRegistry.getCallbacks())           │
+          │     → ThinkResult(finalAnswer?, toolCalls?)  │
+          │                                               │
+          │ if 有最终答案且无工具调用 → 回复用户，EXIT     │
+          │                                               │
+          │ if 有工具调用 → ACT:                          │
+          │   for each toolCall:                          │
+          │     ArgumentResolver.resolve(参数, msg)       │
+          │     ToolRegistry.execute(name, args)         │
+          │       → ActResult(success,data,errorMessage) │
+          │     结果以 ToolResponseMessage 回灌 ChatMemory│
+          │   continue（下一轮带着工具结果再思考）         │
+          └─────────────────────────────────────────────┘
+        finally: chatMemory.clear(userId)  ← 每轮会话结束清空
+```
+
+**三层记忆（ChatService 组装增强系统提示）：**
+- 短期：`MessageWindowChatMemory`（per-user 滑动窗口，会话级，结束后清空）
+- 会话：`message` 表（DB 历史注入 prompt）
+- 长期：`user_memory` 表（DB 长期记忆检索）
+
+### 1.5 工具（@Tool）一览
+
+所有工具方法均返回 `ActResult`（`success` / `data` / `errorMessage`），失败时把 `errorMessage` 回灌给模型实现自我纠正。
+
+| 工具名 | 类 | 能力 | 底层实现 |
+|--------|----|------|---------|
+| `weather_query` | WeatherTool | 查询城市今/明日天气 | 高德天气 API |
+| `image_generate` | ImageGenTool | 文生图 | wan2.5-t2i-preview |
+| `image_recognize` | ImageRecognitionTool | 图片识别描述 | qwen-vl-plus |
+| `image_edit` | ImageRecognitionTool | 按文字编辑图片 | wan2.5 + qwen-vl-plus |
+| `tts_synthesize` | TtsTool | 文字转语音 | cosyvoice-v1 |
+| `voice_switch` | TtsTool | 切换 12 种音色 | TimbreSession |
+| `file_analyze` | FileTool | 文件内容分析提取 | Tika + qwen-plus + RAG |
+| `idiom_game` | IdiomGameTool | 成语接龙 | IdiomDictionary（O(1)）|
+| `reminder_set` | ReminderTool | 定时提醒 | ScheduledExecutor |
+| `navigation` | NavigationTool | 路线规划 / 路况 | 高德 API |
+| `memory_status` | MemoryStatusTool | JVM 运行时监控 | java.lang.management |
+
+> 不是工具：纯对话 / RAG 召回走 `ChatService.chat` 兜底；`/help` `/status` `/cancel` 走 `SlashInterceptor` 预拦截。
 
 ---
 
 ## 二、项目结构
 
 ```
-src/main/java/log/demo/linkDemo/
-├── ILinkApplication.java                    # @SpringBootApplication 入口
+summer-dev/                        ← 父 POM (<packaging>pom>, <dependencyManagement>, <modules>)
 │
-├── config/                                   # 配置层
-│   ├── AiConfig.java                         # ChatClient + intentChatClient + ChatMemory(20条)
-│   ├── BotProperties.java                    # @ConfigurationProperties("bot")
-│   ├── HttpClientConfig.java                 # OkHttp Bean + DashScope SDK 超时三层注入
-│   └── VoiceProperties.java                 # TTS 配置
+├── pom.xml                        ← 父工程，管理版本与模块声明
 │
-├── entity/                                   # 数据库实体 (11 个)
-│   ├── Conversation.java                     # 会话: id/userId/status/messageCount/title
-│   ├── Message.java                          # 消息核心表: 30+ 字段
-│   ├── WeatherQuery.java                     # 天气查询记录
-│   ├── IdiomGameRecord.java                  # 成语接龙积分
-│   ├── FileRecord.java                       # 文件识别记录
-│   ├── ImageRecord.java                      # 图片上下文
-│   ├── TimbreChange.java                     # 音色切换审计
-│   ├── DocumentChunk.java                    # RAG 切片 + embedding JSON
-│   ├── UserMemory.java                       # 用户长期记忆 + embedding JSON
-│   └── VoiceResult.java                      # TTS 结果 (非 DB record)
+├── summer-common/                 ← 零依赖工具包（无 Spring）
+│   └── log/summer/common/
+│       ├── exception/             ← BotException 及 5 个子类（异常体系）
+│       ├── enums/                 ← Timbre（12 音色）、RouteContext（TEXT/VOICE）
+│       ├── constant/              ← Prompts（提示词键常量）
+│       └── resources/prompts/     ← system.txt、file-system.txt
 │
-├── enums/                                    # 枚举
-│   ├── RouteContext.java                     # TEXT / VOICE
-│   └── Timbre.java                          # 12 种音色定义 + 匹配逻辑
+├── summer-aigc/                   ← Agent 核心引擎
+│   └── log/summer/aigc/
+│       ├── port/                  ← BotInboundPort、BotMessage、MessageSender 接口
+│       ├── loop/                  ← AgentLoop、ThinkResult、ActResult、ArgumentResolver
+│       ├── tool/                  ← ToolRegistry + 11 个 @Tool 实现
+│       ├── rag/                   ← RAG 检索服务
+│       ├── entity/                ← 10 个 MyBatis-Plus 实体
+│       ├── mapper/                ← 9 个 Mapper 接口
+│       ├── service/               ← ChatService、ChatPersistenceService + 接口/实现
+│       ├── config/                ← AiConfig、BotProperties、VoiceProperties、
+│       │                          │   HttpClientConfig、GlobalExceptionHandler
+│       └── resources/db/migration/← Flyway V1__initial_schema.sql
 │
-├── exception/                                # 异常体系
-│   ├── BotException.java                     # 基类
-│   ├── AIServiceException.java               # AI 调用 (operation: chat/analyzeImage/...)
-│   ├── ImageGenerationException.java         # 图片生成 (stage: generate/download/...)
-│   ├── VoiceSynthesisException.java          # 语音合成
-│   ├── FileRecognitionException.java         # 文件识别 (stage: detect/extract/analyze)
-│   ├── ConfigurationException.java           # 配置错误 (configKey)
-│   └── GlobalExceptionHandler.java           # ★ 全局异常拦截器
+├── summer-bot/                    ← 传输适配器层
+│   └── log/summer/bot/
+│       ├── ILinkBotAdapter.java   ← 实现 BotInboundPort + MessageSender（微信 ILink）
+│       ├── SlashInterceptor.java  ← / 命令预拦截
+│       └── RetrySender.java       ← 带重试的发送器
 │
-├── mapper/                                   # MyBatis-Plus Mapper (9 个)
-├── rag/                                      # RAG 引擎
-│   ├── DocumentChunkingService.java          # 智能切片 (段落/句子边界)
-│   ├── EmbeddingService.java                 # DashScope text-embedding API
-│   ├── VectorStoreService.java               # 内存余弦相似度 TopK
-│   ├── RAGRetrievalService.java              # 检索入口 + 相关性判断
-│   └── RAGContextAugmenter.java              # RAG prompt 构建
+├── summer-bootstrap/              ← 启动 + 装配
+│   └── log/summer/bootstrap/
+│       └── SummerApplication.java ← @SpringBootApplication + @MapperScan + @ComponentScan
+│   └── resources/
+│       ├── application.yml        ← 主配置（datasource / mybatis-plus / actuator / flyway）
+│       └── config/                ← ai.yml、bot.yml、security.yml(gitignored)
 │
-├── service/                                  # 业务服务层
-│   ├── ILinkBotService.java                  # ★ 核心入口 + MessageSender 实现
-│   ├── MessageSender.java                    # 发送抽象 (sendText/sendImage/sendFile)
-│   ├── ChatPersistenceService.java           # 持久化门面 (8 Service 聚合)
-│   ├── IConversationService.java             # 含 getRecentByUser/getAllByUser/getByConvId
-│   ├── IMessageService.java                  # 含 getMessages/countMessages
-│   └── impl/                                 # 9 个 ServiceImpl
-│
-└── tools/                                    # ★ 智能体工具层 (核心)
-    ├── Agent.java                            # Agent 接口
-    ├── AgentContext.java                     # 调用上下文
-    ├── AgentRouter.java                      # O(1) 路由 + 成语拦截 + 异常捕获
-    ├── Intent.java                           # 8 种意图枚举
-    ├── IntentClassifier.java                 # v2.3: 确定性规则 + 单次 LLM JSON 分类
-    ├── BotMetrics.java                       # Micrometer 指标
-    ├── TextTool.java                         # 文本工具
-    ├── chat/    ChatAgent.java + ChatService.java
-    ├── command/ CommandAgent.java + Command.java + CommandRegistry.java (17条)
-    ├── voice/   VoiceGenAgent.java + TTSEngine.java + TimbreSession.java + AudioTranscoder.java
-    ├── weather/ WeatherAgent.java (v2.1: 高德 API + NPE 安全 + TTL + DB)
-    ├── image/   ImageGenAgent.java + ImageRecognitionAgent.java + ImageGenService.java
-    │            + ImageCacheManager.java + ImageContextManager.java
-    ├── file/    FileAgent.java + FileRecognitionService.java
-    ├── idiom/   IdiomDictionary.java (~590成语 O(1)) + GameSession.java + IdiomGameService.java
-    ├── history/ HistoryService.java (DB 会话+消息查询, 1900字截断)
-    ├── memoryMonitor/ MemoryMonitorTools.java (JVM 指标+历史趋势+告警)
-    ├── navigation/ NavigationTools.java (高德 API + 6 内嵌模型)
-    └── reminder/ ReminderTools.java (解析+存储+ScheduledExecutor+回调)
-
-src/main/resources/
-├── application.yml                           # 主配置
-├── schema.sql                                # 11 张表 DDL
-├── config/  ai.yml / bot.yml / security.yml
-└── prompts/  system.txt / file-system.txt
+└── docs/superpowers/              ← 重构设计文档（specs / plans）
 ```
 
 ---
 
-## 三、功能详解 & 测试案例
+## 三、核心引擎详解
 
-### 3.1 消息入口与路由
+### 3.1 消息入口与传输层
 
-**实现：** `ILinkBotService` 接收微信回调 → 按消息类型分发 → 构建 `AgentContext` → `AgentRouter.route()`
-
-```
-handleMessage(WeixinMessage)
-  ├─ VoiceItem  → ASR → RouteContext.VOICE (不回显, 直接路由)
-  ├─ TextItem   → 去重 → RouteContext.TEXT
-  ├─ ImageItem  → CDN下载(重试2次) → imageBytes
-  └─ FileItem   → 大小校验(>maxSizeMb拒绝) → CDN下载 → fileBytes+fileName
-```
-
-**AgentRouter.route():**
-1. 成语接龙拦截：`isUserInGame && !text.startsWith("/")` → `IdiomGameService.handleInput()`
-2. 意图分类：`IntentClassifier.classify(ctx)` → `Intent`
-3. O(1) Map 查找：`agentMap.get(intent)`
-4. 执行 + 异常捕获：`try { agent.execute(ctx) } catch → GlobalExceptionHandler`
-
-**测试案例：** 用户发送文本 `"你好"` → ILinkBotService 构建 AgentContext(routeContext=TEXT) → AgentRouter 路由 → IntentClassifier 返回 CHAT → ChatAgent 回复
-
----
-
-### 3.2 意图分类 (IntentClassifier v2.3)
-
-**实现：** 确定性规则（零延迟）→ 单次 qwen-turbo JSON 调用（~150ms）→ 降级 CHAT
+**实现：** `ILinkBotAdapter` 实现 `BotInboundPort.onMessage(BotMessage)`，接收 ILink 回调后按消息类型构建 `BotMessage`，再经 `SlashInterceptor` 预拦截，未命中则进入 `AgentLoop`。
 
 ```
-classify(ctx)
-  ├─ / 开头      → COMMAND       (零延迟)
-  ├─ hasFile()   → FILE          (零延迟)
-  ├─ hasImage()  → IMAGE_EDIT    (零延迟)
-  ├─ text 为空   → CHAT          (零延迟)
-  └─ llmClassify(text)
-       └─ intentChatClient(qwen-turbo)
-            .system("分类用户消息，仅输出JSON: {\"intent\":\"类型\"}...")
-            .user(text).call().content()
-            ├─ parseJson() → {"intent":"CHAT"} → Intent.CHAT
-            ├─ JSON失败 → 同响应提取关键词 → Intent
-            └─ 全部失败 → CHAT
+ILinkBotAdapter.onMessage(msg)
+  ├─ VoiceItem → ASR 文本 → BotMessage(context=VOICE)
+  ├─ TextItem  → 文本 → BotMessage(context=TEXT) → SlashInterceptor 预拦截
+  ├─ ImageItem → CDN 下载(重试) → imageBytes → BotMessage
+  └─ FileItem  → 大小校验(>maxSizeMb 拒绝) → CDN 下载 → fileBytes+fileName
+        │
+        ▼  (未命中 slash)
+  AgentLoop.orchestrate(botMsg, this /* MessageSender */)
 ```
 
-**8 种意图：** COMMAND / CHAT / IMAGE_GEN / IMAGE_EDIT / TTS / VOICE_SWITCH / WEATHER / FILE
+`MessageSender` 三个方法由 `ILinkBotAdapter` 实现：`sendText`（直接发）、`sendImage`/`sendFile`（经 `RetrySender` 指数退避重试，1s→2s→4s，最多 3 次）。
 
-**测试案例：**
+### 3.2 Slash 命令（预拦截）
 
-| 输入 | 预期分类 | 原因 |
-|------|---------|------|
-| `/draw 猫` | COMMAND | `/` 开头确定性规则 |
-| `画一只猫` | IMAGE_GEN | qwen-turbo 识别为图片生成 |
-| `今天天气怎么样` | WEATHER | qwen-turbo 识别为天气查询 |
-| `帮我写一段Java代码` | CHAT | qwen-turbo 识别为通用对话 |
-| `用语音朗读` | TTS | qwen-turbo 识别为语音合成 |
-| LLM 超时 | CHAT | 异常降级 |
+`SlashInterceptor` 在消息进入 `AgentLoop` 之前处理，**消费后不再转发**：
 
----
+| 命令 | 行为 |
+|------|------|
+| `/help` | 列出可用命令与功能说明 |
+| `/status` | 返回 Bot 运行时指标（来自 `BotMetrics`） |
+| `/cancel` | 清空当前用户 `ChatMemory`，结束会话 |
+| 未知 `/xxx` | 「未知命令，输入 /help 查看可用命令」 |
 
-### 3.3 AI 多轮对话 + 三级记忆 (ChatAgent)
+> 其余能力（画图、天气、语音、文件、成语、导航、提醒、监控）均**不再以 `/` 命令形式存在**，而是由用户自然语言触发，模型通过函数调用选择对应 `@Tool`。
 
-**实现：** 三级记忆体系 — ChatMemory(20条滑动窗口) + message 表 DB 历史注入 + user_memory 长期记忆检索
+### 3.3 双循环 AgentLoop
 
-```
-ChatAgent.execute(ctx)
-  ├─ buildAugmentedMessage(userId, text)
-  │   ├─ loadDbHistory(userId)
-  │   │   └─ getActiveConversation → getMessages → 最近 6 条
-  │   │   └─ 格式化为 "[对话历史]\n用户：...\n助手：...\n"
-  │   └─ loadLongTermMemory(userId)
-  │       └─ userMemoryService.lambdaQuery()
-  │           .eq(userId).orderByDesc(importance).last("LIMIT 5")
-  │       └─ 格式化为 "[用户已知信息]\n- ...\n"
-  │
-  ├─ LLM 调用
-  │   ├─ RAG 检索 → hasRelevant → chatWithRAG(augmentedText)
-  │   └─ else → chat(userId, augmentedText)
-  │       └─ ChatClient(qwen-plus)
-  │           .system(chatSystemPrompt)
-  │           .advisors(MessageChatMemoryAdvisor, userId)  ← 20条窗口
-  │           .call()
-  │
-  ├─ 异步 → saveLongTermMemory()  (长度>30 的回复保存到 user_memory)
-  │
-  └─ VOICE → ttsAndSend() (仅语音) | TEXT → sendText() (仅文本)
-```
+见 §1.4 流程图。`AgentLoop` 负责：维护 `while` 迭代、安全阀（10 轮 / 120s）、`ChatMemory` 增删、把工具结果以 `ToolResponseMessage` 回灌、循环结束 `finally` 清空记忆、未捕获异常转交 `GlobalExceptionHandler`。
 
-| 记忆层 | 存储 | 容量 | 生命周期 |
-|--------|------|------|---------|
-| 短期 | ChatMemory (内存) | 20条 | 重启丢失 |
-| 会话 | message 表 (DB) | 永久 | 跨重启恢复 |
-| 长期 | user_memory 表 (DB) | 永久 | 跨会话检索 |
+`ArgumentResolver` 在执行前替换参数占位符：`${message.image}`、`${message.file}`、`${message.fileName}`（取自当前 `BotMessage` 的二进制数据）。若引用了占位符但消息无对应资源 → 抛出 `PlaceholderResolutionException` → 转为 `ActResult.failure` → 模型自我纠正。
 
-**测试案例：**
-1. 用户 `"我叫小明，喜欢咖啡"` → Bot 回复 → user_memory 异步保存 "我叫小明"、"喜欢咖啡"
-2. 第二天用户 `"推荐饮料"` → loadLongTermMemory 检索到 "喜欢咖啡" → Bot `"小明，推荐拿铁！"`
+### 3.4 工具注册与执行（ToolRegistry）
 
----
+`ToolRegistry` 在 `@PostConstruct` 扫描 Spring 容器中带 `@Tool` 注解方法的 Bean，用 `MethodToolCallbackProvider` 生成 `List<ToolCallback>`，并以 `name → callback` 建索引。`AgentLoop` 通过 `execute(name, args)` 调用，返回统一 `ActResult`。
 
-### 3.4 命令系统 (CommandAgent + CommandRegistry)
+### 3.5 三级记忆与 RAG
 
-**实现：** `LinkedHashMap<String, Command>` 前缀匹配，注册顺序=优先级
+`ChatService` 负责组装增强系统提示（DB 历史 + 长期记忆）并提供三类调用：
+- `chatWithTools(messages, callbacks)` — 思考轮（带工具清单）
+- `chat(messages)` — 兜底纯对话
+- `chatWithRAG(messages, docs)` — RAG 命中时的对话
 
-**17 条命令：**
+RAG 服务（`rag/` 包）：`DocumentChunkingService`（切片）、`EmbeddingService`（DashScope embedding）、`VectorStoreService`（内存余弦相似度 TopK）、`RAGRetrievalService`（检索入口）、`RAGContextAugmenter`（prompt 构建）。
 
-| 命令 | 处理器 | 功能 |
-|------|--------|------|
-| `/help` | handleHelp | 帮助列表 |
-| `/status` | handleStatus | 连接状态+音色 |
-| `/clear` | handleClear | 清除记忆+缓存+关闭会话 |
-| `/draw <描述>` | handleDraw | 文生图（异步虚拟线程） |
-| `/tts <文本>` | handleTts | 文字转语音 |
-| `/weather <城市>` | handleWeather | 天气查询 |
-| `/voice list` | handleVoice | 12 种音色列表 |
-| `/voice <编号>` | handleVoice | 切换音色 |
-| `/cancel` | handleCancel | 取消图片编辑 |
-| `/cy start [成语]` | handleIdiomGame | 成语接龙 |
-| `/cy stop` | handleIdiomGame | 结束接龙 |
-| `/cy ls` | handleIdiomGame | 接龙积分 |
-| `/memory [diff/simple/history]` | handleMemory | 内存监控 |
-| `/nav 从<A>到<B> [方式]` | handleNav | 路线规划 |
-| `/traffic <道路>` | handleTraffic | 实时路况 |
-| `/remind <时间> <内容>` | handleRemind | 定时提醒 |
-| `/history [id/all]` | handleHistory | 历史会话查询 |
+### 3.6 全局异常拦截
 
-**测试案例：**
-- `/help` → 返回完整命令列表
-- `/voice 3` → 切换到第 3 种音色 → 返回 `✅ 已切换到音色：龙小秋`
-- `/clear` → ChatService.clearHistory + ImageCacheManager.removeSilently + closeConversation
-
----
-
-### 3.5 文生图 (ImageGenAgent)
-
-**实现：** DashScope wan2.5-t2i-preview 异步调用 + 180s 长轮询 + 参考图迭代
-
-**调用链：**
-
-```
-ImageGenAgent.execute(ctx)
-  └─ executor.submit(doImageGen)          ← 虚拟线程异步
-      ├─ imageContextManager.getLastRefImage(userId)    → CDN URL
-      ├─ imageGenService.generateImageUrl(prompt, refUrl)
-      │   └─ ImageSynthesis.asyncCall(param) → taskId
-      │   └─ for(i=0; i<90; i++) sleep(2s)  ← 180s 长轮询
-      │       ├─ fetch(taskId) → "SUCCEEDED" → CDN URL
-      │       └─ "FAILED" / 超时 → null
-      ├─ refUrl 失败 → 回退 generateImageUrl(prompt, null)
-      ├─ imageGenService.downloadImage(url)              → byte[]
-      ├─ imageContextManager.save(userId, url, bytes)     ← 供下次迭代
-      └─ sender.sendImage(userId, bytes, "ai-gen.png", prompt)
-```
-
-**测试案例：**
-1. `"画一只柴犬"` → 无参考图 → wan2.5 生成 → 发送图片 → 缓存 URL
-2. `"给柴犬戴上帽子"` → getLastRefImage 获取上次 URL → wan2.5(refImage) 迭代生成 → 发送
-3. 参考图过期 → refImage 生成失败 → 自动回退纯文本生成
-
----
-
-### 3.6 图片识别 & 编辑 (ImageRecognitionAgent)
-
-**实现：** qwen-vl-plus 多模态理解 + wan2.5 重绘；双阶段：上传识别 → 编辑指令执行
-
-**阶段 1 — 上传识别：**
-
-```
-ctx.hasImage()=true → IMAGE_EDIT → handleImageUpload(ctx)
-  ├─ chatService.analyzeImage(bytes)      ← qwen-vl-plus
-  │   └─ prompt("请详细描述这张图片...").media(image).call()
-  ├─ imageCacheManager.put(userId, bytes)  ← 会话隔离缓存
-  └─ sender.sendText("【图片描述】\n" + desc + "\n💡 你可以编辑...")
-```
-
-**阶段 2 — 编辑：**
-
-```
-"把图片改成黑白风格" → IMAGE_EDIT → doImageEdit(ctx)
-  ├─ imageCacheManager.lock(userId)            ← 串行化
-  ├─ imageCacheManager.peek(userId)            ← peek 不删除
-  ├─ chatService.describeImageEdit(原图, 指令)  ← qwen-vl-plus
-  │   └─ 原图+指令 → 文生图详细画面描述
-  ├─ imageGenService.generateImageUrl(editPrompt) ← wan2.5
-  ├─ download → imageContextManager.save()
-  ├─ imageCacheManager.removeSilently()        ← 清除待编辑
-  └─ sender.sendImage() → finally: unlock()
-```
-
-**测试案例：**
-1. 上传海滩照片 → `"【图片描述】夕阳海滩，棕榈树..."` + 编辑提示
-2. `"把图片改成黑白风格"` → lock → describeImageEdit → wan2.5 重绘 → 发送黑白照片 → unlock
-3. 无图片时说 `"改图"` → IMAGE_EDIT_RE 不匹配 → LLM 分类为 CHAT（不会误判）
-
----
-
-### 3.7 语音合成 (VoiceGenAgent)
-
-**实现：** DashScope cosyvoice-v1 + PCM→WAV 转码 + TimbreSession 用户音色管理
-
-**调用链：**
-
-```
-══════ TTS ══════
-"用语音朗读你好世界" → TTS → VoiceGenAgent.execute(ctx)
-  ├─ TextTool.extractTtsText(text)         → "你好世界"
-  ├─ TimbreSession.getCurrentVoiceId(userId) → "longxiaochun"
-  ├─ TTSEngine.synthesize(text, voiceId)
-  │   └─ SpeechSynthesizer.call(cosyvoice-v1) → PCM byte[]
-  ├─ AudioTranscoder.pcmToWav(pcm, 16000, 16, 1) → WAV byte[]
-  └─ sender.sendFile(userId, wav, "tts.wav", text)
-
-══════ 音色切换 ══════
-"换萝莉音" → VOICE_SWITCH → VoiceGenAgent
-  ├─ Timbre.matchKeyword("萝莉") → LONG_XIAO_XIA
-  ├─ TimbreSession.switchTo(userId, timbre)
-  └─ saveTimbreChange(...) → timbre_change 表
-```
-
-**测试案例：**
-1. `"用语音朗读你好世界"` → extractTtsText="你好世界" → TTS 合成 → 发送 WAV 文件
-2. `"换萝莉音"` → matchKeyword → 切换到龙小夏 → `✅ 已切换`
-3. 再发 `"用语音朗读测试"` → 用龙小夏音色朗读
-
----
-
-### 3.8 天气查询 (WeatherAgent v2.1)
-
-**实现：** 高德天气 API + 38 内置城市 adcode + 地理编码 API 动态解析 + TTL 缓存 + NPE 安全
-
-**调用链：**
-
-```
-"北京天气" → WEATHER → WeatherAgent.execute(ctx)
-  ├─ extractCity(text) → "北京"
-  │   ├─ CITY_WEATHER_PATTERN 正则
-  │   ├─ LinkedHashMap 遍历 38 内置城市 (长名优先)
-  │   └─ 回退模糊匹配
-  │
-  ├─ generateReport(userId, text)
-  │   ├─ "明天" → buildForecastReport(dayOffset=1)
-  │   ├─ "预报" → buildMultiDayReport()
-  │   └─ 默认 → buildNowReport()
-  │       ├─ fetchNow(city)
-  │       │   ├─ TTL 缓存检查 (5min)
-  │       │   ├─ resolveAdcode(city)
-  │       │   │   ├─ 38内置 → adcode
-  │       │   │   ├─ geocodeCache 命中
-  │       │   │   └─ 高德地理编码 API → adcode (缓存)
-  │       │   └─ GET /v3/weather/weatherInfo → JSON
-  │       │       └─ safeString()/safeDouble() ← 防 NPE
-  │       └─ saveQuery() → weather_query 表
-  └─ sender.sendText(report)
-```
-
-**NPE 安全：** `safeString(obj, key, default)` / `safeDouble(obj, key, default)` 封装所有 JSON 字段访问
-
-**测试案例：**
-1. `"北京天气"` → extractCity="北京" → 内置 adcode "110000" → 天气 API → 报告
-2. `"三亚天气"` → 非 38 内置 → 地理编码 API → adcode="460200" → 缓存 → 天气 API
-3. `"深圳明天天气"` → extractCity="深圳" + "明天" → buildForecastReport(dayOffset=1)
-4. API 返回异常 JSON → safeString 返回默认值 → 不 NPE
-
----
-
-### 3.9 文件识别 (FileAgent)
-
-**实现：** Tika MIME 检测 + 文本提取(截断 8K) + qwen-plus AI 分析(重试 2 次) + RAG 切片+Embedding
-
-**调用链：**
-
-```
-ctx.hasFile() → FILE → FileAgent.execute(ctx)
-  └─ executor.submit(doFileRecognition)
-      └─ FileRecognitionService.recognize(userId, bytes, fileName)
-          ├─ Tika.detect() → MIME 类型
-          ├─ 图片? → analyzeImage() (qwen-vl-plus)
-          └─ 文档? → Tika.parseToString() → 截断 8K
-          ├─ chatService.analyzeDocument() (重试2次, 2s/4s 指数退避)
-          ├─ FileRecord 持久化 → fileRecordId
-          ├─ 异步 RAG:
-          │   ├─ DocumentChunkingService.chunk(text)
-          │   ├─ EmbeddingService.embedBatch(texts)
-          │   └─ VectorStoreService.storeDocumentChunk(chunks)
-          └─ sender.sendText(formattedReport)
-```
-
-**测试案例：**
-1. 上传 `Day3.docx` → Tika 检测为 Word → 提取文本 → AI 分析 → 回复分析结果 → 后台 RAG 切片
-2. 上传 `photo.jpg` → Tika 检测为图片 → qwen-vl-plus 多模态分析
-3. 上传 `big.pdf` (25MB > 20MB) → 大小校验拒绝
-
----
-
-### 3.10 成语接龙 (IdiomGameService)
-
-**实现：** O(1) 词典 (Map<Character, List<String>> + Set<String>) + 独立会话 (ConcurrentHashMap) + 超时清理 (ScheduledExecutorService) + 积分 DB
-
-**调用链：**
-
-```
-══════ 开始 ══════
-/cy start → COMMAND → handleIdiomGame()
-  → startGame(userId, null)
-    ├─ dictionary.randomIdiom() → "虎虎生威"
-    └─ new GameSession(userId, "虎虎生威") → sessions.put()
-
-══════ 接龙 (AgentRouter 拦截) ══════
-"威风凛凛" (游戏中非/文本)
-  → AgentRouter.isUserInGame=true → handleInput()
-    ├─ dictionary.isValid("威风凛凛") → O(1) Set.contains ✓
-    ├─ 首字'威'=='威' ✓  |  未重复 ✓
-    ├─ session.recordSuccess() → score++
-    ├─ dictionary.findChain('凛', used)
-    │   └─ Map.get('凛') → O(1) → Fisher-Yates 随机 → "凛然正气"
-    └─ session.recordAiMove("凛然正气")
-
-══════ AI 无法接龙 ══════
-findChain(lastChar, used) → Optional.empty()
-  → addBonus(2) → saveRecord("USER_WIN") → remove session
-
-══════ 超时 ══════
-cleanupExecutor(每2min) → isExpired(5min) → saveRecord("TIMEOUT") → remove
-```
-
-**测试案例：**
-1. `/cy start` → 随机成语 → 用户接龙 → AI 接龙 → 循环
-2. `/cy start 龙飞凤舞` → 指定起始
-3. 接龙 `"威风凛凛"` → 成功 → `"凛然正气"` → 积分+1
-4. 重复说 `"威风凛凛"` → `"已经用过了，换一个吧！"`
-5. 说非四字 `"你好"` → `"请输入一个四字成语"`
-6. `/cy stop` → 保存积分 → idiom_game_record 表
-7. `/cy ls` → 最近 3 局积分
-8. 5 分钟无操作 → 自动结束 → saveRecord("TIMEOUT")
-
----
-
-### 3.11 历史记录查询 (HistoryService)
-
-**实现：** 基于 conversation + message 表查询，1900 字智能截断适配微信限制
-
-**调用链：**
-
-```
-/history → handleHistory()
-  ├─ arg="" → recentHistory(userId)
-  │   └─ getRecentByUser(userId, 3) → 格式化摘要
-  │
-  ├─ arg="all" → allHistory(userId)
-  │   └─ getAllByUser(userId) → 1900 字截断
-  │
-  └─ arg="15" → conversationDetail(userId, 15)
-      └─ getByConvId(15) → getMessages(15)
-          └─ 逐条 USER/BOT 格式化 → 1900 字截断
-```
-
-**测试案例：**
-1. `/history` → 返回最近 3 个会话摘要（编号、状态、消息数、标题）
-2. `/history 15` → 返回 #15 会话的完整对话（👤/🤖 逐条显示）
-3. `/history all` → 全部会话列表（自动截断）
-4. 无历史 → `"暂无历史会话记录，发送一条消息开始对话吧！"`
-5. 查询他人会话 → `"未找到会话 #XX，或该会话不属于你"`
-
----
-
-### 3.12 内存监控 (MemoryMonitorTools)
-
-**实现：** `java.lang.management` API 采集 JVM/OS 指标 + Unicode 块字符进度条 + 4 级告警 + 历史趋势
-
-**调用链：**
-
-```
-/memory → handleMemory()
-  ├─ collectSnapshot()
-  │   ├─ MemoryMXBean → heap used/max/committed + nonHeap
-  │   ├─ OperatingSystemMXBean → totalPhysical/freePhysical/Swap/CPU
-  │   ├─ ThreadMXBean → threadCount
-  │   └─ GarbageCollectorMXBean → gcCount/gcTimeMs
-  ├─ recordSnapshot() → ConcurrentLinkedDeque (max 20)
-  ├─ generateReport() → 多行图形化报告
-  ├─ generateSimpleReport() → 单行简版
-  ├─ generateReport(prev, curr) → 对比报告
-  └─ generateHistoryReport() → 最近 10 次表格 + 趋势箭头
-```
-
-**测试案例：**
-1. `/memory` → 完整报告：堆内存进度条 + 系统内存 + CPU/GC/线程 + 告警
-2. `/memory diff` → 与上次快照对比 → 堆增长+GC频率+线程变化
-3. `/memory simple` → `🖥 堆：[████▓░░░] 72.5% | CPU：12.5% | 线程：156`
-4. `/memory history` → 最近 10 次采样表格 + `📈 堆内存增长 +120.5 MB`
-
----
-
-### 3.13 路线导航 (NavigationTools)
-
-**实现：** 高德 API 地理编码 + 4 种出行方式路线规划 + 实时路况查询 + 6 内嵌模型
-
-**调用链：**
-
-```
-/nav 从北京西站到天安门 步行 → handleNav()
-  ├─ 解析 "从(.+?)到(.+)" → origin/dest
-  ├─ 后缀 "步行" → TravelMode.WALKING
-  └─ Thread.startVirtualThread()
-      ├─ NavigationTools.planRoute(apiKey, origin, dest, WALKING)
-      │   ├─ geocode("北京西站") → "116.322,39.895"
-      │   ├─ geocode("天安门") → "116.397,39.909"
-      │   └─ GET /v3/direction/walking → JSON → RouteResult
-      └─ buildTextReport(result, mode, origin, dest)
-          ├─ distanceFormatted() / durationFormatted()
-          └─ 前 6 步导航指令
-```
-
-**内嵌模型：** TravelMode(enum) + RouteResult + RouteStep + TrafficCondition(CongestionLevel 5级+emoji) + TransitSegment + TransitPlan
-
-**测试案例：**
-1. `/nav 从北京西站到天安门` → 驾车路线（默认）：距离、耗时、导航步骤
-2. `/nav 从北京西站到天安门 步行` → 步行路线
-3. `/nav 从北京西站到天安门 公交` → 公交/地铁换乘方案
-4. `/traffic 中关村南大街` → 实时路况 🟡缓行(25km/h)
-
----
-
-### 3.14 定时提醒 (ReminderTools)
-
-**实现：** 时间正则解析（6 种格式）+ ConcurrentHashMap 内存存储 + ScheduledExecutorService 1s 检查 + MessageSender 回调
-
-**调用链：**
-
-```
-/remind 30分钟后 开会 → handleRemind()
-  ├─ parseTime("30分钟后 开会")
-  │   └─ MINUTES_PAT.matcher() → 30分钟 → ParsedTime(now+30min, "开会")
-  ├─ createReminder(userId, triggerTime, "开会")
-  │   ├─ ensureStarted() → ScheduledExecutorService(1s)
-  │   └─ reminders.computeIfAbsent(userId).add(task)
-  └─ "✅ 提醒已设置！..."
-
-══════ 触发 ══════
-checkDueReminders() (每1秒)
-  ├─ task.isDue() → sender.sendText("⏰ 提醒时间到！\n──── 开会 ────")
-  └─ tasks.remove(task)
-```
-
-**支持格式：** `X分钟后/小时后/秒后` | `HH:mm` | `明天 HH:mm` | `M月d日 HH:mm`
-
-**测试案例：**
-1. `/remind 30分钟后 开会` → `✅ 提醒已设置` → 30分钟后 → `⏰ 提醒时间到！`
-2. `/remind 明天 08:00 起床` → 明天 8:00 触发
-3. `/remind list` → 所有进行中提醒
-4. `/remind cancel 2` → 取消 ID=2 的提醒
-5. `/remind cancel all` → 取消全部
-
----
-
-### 3.15 全局异常拦截 (GlobalExceptionHandler)
-
-**实现：** AgentRouter try-catch 统一捕获 → 按异常类型分类 → 构建友好中文响应
-
-```
-AgentRouter.route(ctx)
-  └─ try { agent.execute(ctx) }
-     catch (Exception e) {
-       exceptionHandler.handle(userId, sender, agent.name(), e)
-         ├─ classify(e) → BotException? 子类? 未知?
-         │   → ErrorInfo(type, detail, severity)
-         ├─ buildErrorMessage → 含时间戳+追踪ID
-         └─ sender.sendText(formattedError)
-     }
-```
-
-**测试案例：**
-1. AI 服务超时 → `【AI 对话失败】错误类型：AI 对话失败 详情：... 追踪ID：err-xxxx`
-2. 图片生成 API 异常 → `【图片生成失败】错误类型：图片生成失败 追踪ID：err-xxxx`
-3. 未知 NPE → `【系统错误】系统内部异常，请稍后重试或联系管理员`
+`GlobalExceptionHandler`（位于 `summer-aigc/config`，因为它依赖 `MessageSender` 端口）按异常类型分类，构建带时间戳+追踪 ID 的中文友好响应。`summer-common/exception/` 仅放异常类，**不含** Handler。
 
 ---
 
 ## 四、配置体系
 
-| 文件 | 命名空间 | 关键项 |
-|------|---------|--------|
-| `application.yml` | server/spring.datasource/mybatis-plus/management | 端口 8080, MySQL wxbot_db, 自动建表 |
-| `config/ai.yml` | spring.ai.dashscope | qwen-plus/qwen-turbo/qwen-vl-plus/wan2.5/cosyvoice-v1, 超时 300s |
-| `config/bot.yml` | bot.* | 图片编辑 prompt, 缓存 TTL, 文件大小上限 20MB, 天气 API Key |
-| `config/security.yml` | spring.ai.dashscope.api-key | DashScope API Key (gitignore) |
-| `prompts/system.txt` | 外部文件 | AI 对话系统提示词 |
-| `prompts/file-system.txt` | 外部文件 | 文档分析系统提示词 |
+配置归属按模块划分，运行时由 `summer-bootstrap/application.yml` 的 `spring.config.import` 聚合。
+
+| 文件 | 归属模块 | 命名空间 | 关键项 |
+|------|---------|---------|--------|
+| `application.yml` | summer-bootstrap | server / spring.datasource / mybatis-plus / management / flyway | 端口 8080、MySQL `wxbot_db`、`spring.config.import` |
+| `config/ai.yml` | summer-bootstrap(resources) | spring.ai.dashscope | qwen-plus / wan2.5 / cosyvoice-v1 / paraformer-v2，超时 300s |
+| `config/bot.yml` | summer-bootstrap(resources) | bot.* | 图片编辑 prompt、缓存 TTL、文件上限 20MB、天气 base-url |
+| `config/security.yml` | summer-bootstrap(resources) | spring.ai.dashscope.api-key | DashScope API Key（**gitignored**） |
+| `prompts/system.txt` | summer-common(resources) | 外部文件 | 对话系统提示词 |
+| `prompts/file-system.txt` | summer-common(resources) | 外部文件 | 文档分析系统提示词 |
 
 ```yaml
-# 关键配置
-spring.ai.dashscope.chat.options.model:        qwen-plus
-spring.ai.dashscope.image.options.model:       wan2.5-t2i-preview
-spring.ai.dashscope.voice.tts.model:           cosyvoice-v1
-bot.cache.pending-image-ttl-minutes:  5
-bot.cache.max-pending-images:         50
+# application.yml 关键片段
+spring:
+  config:
+    import:
+      - optional:classpath:config/security.yml
+      - classpath:config/ai.yml
+      - classpath:config/bot.yml
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+# ai.yml 关键片段
+spring.ai.dashscope.chat.options.model:  qwen-plus
+spring.ai.dashscope.image.options.model: wan2.5-t2i-preview
+spring.ai.dashscope.voice.tts.model:     cosyvoice-v1
+
+# bot.yml 关键片段
+bot.cache.pending-image-ttl-minutes: 5
 bot.file.max-size-mb:                 20
 bot.weather.base-url: https://restapi.amap.com/v3/weather/weatherInfo
 ```
 
+> 注意：`ai.yml` / `bot.yml` 中仍有少量注释沿用了旧类名（`IntentClassifier`、`ImageGenAgent` 等），仅为注释，不影响运行；如需可后续清理。
+
 ---
 
 ## 五、数据库设计
+
+持久化框架 MyBatis-Plus；迁移由 **Flyway** 管理，基线脚本 `summer-aigc/src/main/resources/db/migration/V1__initial_schema.sql`。
 
 | 表名 | 实体 | 关键字段 | 用途 |
 |------|------|---------|------|
@@ -679,3 +284,38 @@ bot.weather.base-url: https://restapi.amap.com/v3/weather/weatherInfo
 | `timbre_change` | TimbreChange | userId/oldVoiceId/newVoiceId/changeSource | 音色变更 |
 | `document_chunks` | DocumentChunk | fileRecordId/chunkText/embedding(JSON) | RAG 向量切片 |
 | `user_memory` | UserMemory | userId/memoryType/content/embedding(JSON)/importance | 长期记忆 |
+
+---
+
+## 六、构建与运行
+
+要求：JDK 21、Maven 3.9+、MySQL 8.x（库名 `wxbot_db`）、可用的 DashScope API Key（写入 `summer-bootstrap/src/main/resources/config/security.yml`）。
+
+```bash
+# 1. 安装全部模块到本地仓库
+mvn clean install
+
+# 2. 运行（仅构建并启动 bootstrap 模块，依赖已 install）
+mvn -pl summer-bootstrap spring-boot:run
+
+# 3. 或先打包再运行
+mvn -pl summer-bootstrap package
+java -jar summer-bootstrap/target/summer-bootstrap-0.0.1-SNAPSHOT.jar
+```
+
+启动后微信扫码登录，发送消息即可对话；访问 `http://localhost:8080/actuator/health` 与 `/actuator/metrics` 查看健康与指标。
+
+---
+
+## 七、子模块帮助文档
+
+每个子模块下均附有 `HELP.md`，说明该模块职责、包结构、关键类、依赖与构建、扩展方式：
+
+- [summer-common/HELP.md](summer-common/HELP.md) — 零依赖工具包
+- [summer-aigc/HELP.md](summer-aigc/HELP.md) — Agent 核心引擎
+- [summer-bot/HELP.md](summer-bot/HELP.md) — 传输适配器
+- [summer-bootstrap/HELP.md](summer-bootstrap/HELP.md) — 启动与装配
+
+重构设计文档：
+- [specs](docs/superpowers/specs/2026-07-28-multi-module-agent-refactor-design.md)
+- [plans](docs/superpowers/plans/2026-07-28-multi-module-agent-refactor.md)
