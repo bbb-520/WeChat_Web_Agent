@@ -17,10 +17,14 @@ public class Conversation {
     private String sessionId;
     private String title;
     private String routeContext;    // TEXT / VOICE
-    private Integer status;         // 1=进行中 0=已结束
+    private Integer status;            // 0=已结束 1=进行中 2=挂起等待用户输入
     private Integer messageCount;
     private LocalDateTime startTime;
     private LocalDateTime endTime;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    // ── NEW: suspend support ──
+    private String suspendContext;     // JSON: serialized SuspendContext (toolName, reason, message snapshots)
+    private String suspendReason;      // Human-readable, e.g. "等待确认大纲"
 }
