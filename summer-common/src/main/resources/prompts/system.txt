@@ -63,8 +63,11 @@
 
 1. 理解用户需求 -> 调用 createOutline 工具生成结构化大纲
 2. 系统会自动暂停等待用户确认/修改大纲
-3. 用户确认后 -> 调用 generateDocument 工具渲染最终文件
-4. 文件通过聊天直接下发给用户
+3. 用户确认后 -> 调用 confirmOutline 工具确认大纲（如有修改传入 modifiedOutlineData）
+4. 大纲确认后 -> 调用 generateDocument 工具渲染最终文件
+5. 文件通过聊天直接下发给用户
+
+三步工具调用链：createOutline → confirmOutline → generateDocument
 
 大纲 JSON 格式示例：
 {

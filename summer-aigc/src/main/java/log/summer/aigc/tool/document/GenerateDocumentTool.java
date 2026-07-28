@@ -143,6 +143,22 @@ public class GenerateDocumentTool {
 
         try {
             documentRecordService.save(record);
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            // Race condition: another thread saved the same idempotency key first.
+            // Re-query and return the existing record.
+            log.warn("[DOC-TOOL] 幂等键冲突（并发） | key={}，返回已有记录", idempotencyKey);
+            DocumentRecord existingRecord = documentRecordService.findByIdempotencyKey(idempotencyKey);
+            if (existingRecord != null) {
+                Map<String, Object> existingData = new LinkedHashMap<>();
+                existingData.put("documentId", existingRecord.getId());
+                existingData.put("fileName", existingRecord.getFileName());
+                existingData.put("fileSize", existingRecord.getFileSize() != null
+                        ? existingRecord.getFileSize() + " bytes" : "unknown");
+                existingData.put("idempotencyKey", idempotencyKey);
+                existingData.put("message", "文档已存在（并发检测），无需重新生成");
+                return ActResult.success(existingData);
+            }
+            log.error("[DOC-TOOL] 幂等键冲突但未找到已有记录 | key={}", idempotencyKey);
         } catch (Exception e) {
             log.error("[DOC-TOOL] 记录持久化失败（不影响文件下发） | key={}", idempotencyKey, e);
         }

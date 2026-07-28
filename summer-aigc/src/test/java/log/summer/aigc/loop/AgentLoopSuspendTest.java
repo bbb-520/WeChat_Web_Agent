@@ -20,9 +20,11 @@ import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -49,10 +51,10 @@ class AgentLoopSuspendTest {
 
     @BeforeEach
     void setUp() {
-        chatMemory = MessageWindowChatMemory.builder()
+        chatMemory = spy(MessageWindowChatMemory.builder()
                 .chatMemoryRepository(new InMemoryChatMemoryRepository())
                 .maxMessages(20)
-                .build();
+                .build());
         agentLoop = new AgentLoop(
                 chatService, toolRegistry, argumentResolver,
                 chatMemory, exceptionHandler, sessionStateManager,
@@ -111,6 +113,9 @@ class AgentLoopSuspendTest {
                 "等待确认大纲");
         when(toolRegistry.execute(eq("createOutline"), anyMap())).thenReturn(suspendResult);
 
+        // Pre-populate chatMemory with a message to verify it's preserved after suspend
+        chatMemory.add("user123", new UserMessage("之前的消息"));
+
         BotMessage msg = new BotMessage("user123", "帮我做个PPT",
                 null, null, null, RouteContext.TEXT);
 
@@ -124,8 +129,11 @@ class AgentLoopSuspendTest {
         // Assert: suspend reason was sent to user
         verify(sender).sendText(eq("user123"), eq("等待确认大纲"));
         // Assert: ChatMemory was NOT cleared (state preserved for resume)
-        // (after orchestrate returns, verify chatMemory still has messages)
-        // Note: in the finally block, if suspended, clear is skipped
+        // In the finally block, if suspended, clear is skipped
+        verify(chatMemory, never()).clear(anyString());
+        // Verify chatMemory still has messages (not cleared)
+        assertFalse(chatMemory.get("user123").isEmpty(),
+                "ChatMemory should NOT be cleared after suspend — state must be preserved for resume");
     }
 
     @Test
