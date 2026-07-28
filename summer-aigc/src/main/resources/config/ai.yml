@@ -1,0 +1,36 @@
+# AI 模型配置 —— 每个智能体使用专用模型
+# 意图分类由 IntentClassifier (qwen-turbo) 在 AiConfig 中配置
+
+spring:
+  ai:
+    system-prompt-path: classpath:prompts/system.txt
+    dashscope:
+      connect-timeout: 30000
+      read-timeout: 300000       # 5 分钟，长文本/图片生成需要
+
+      # ── 智能体模型绑定 ──
+
+      # ChatAgent / ChatService: 通义千问 (qwen-plus)
+      chat:
+        options:
+          model: qwen-plus
+
+      # ImageGenAgent: 万象文生图 (wan2.5-t2i-preview)
+      image:
+        options:
+          model: wan2.5-t2i-preview
+
+      # ImageRecognitionAgent: 万象多模态 (qwen-vl-plus)
+      # (在 ChatService.analyzeImage/describeImageEdit 中通过 DashScopeChatOptions 指定)
+
+      # VoiceGenAgent: CosyVoice TTS
+      voice:
+        asr:
+          model: paraformer-v2      # Paraformer 语音识别
+          format: mp3
+          sample-rate: 16000
+        tts:
+          model: cosyvoice-v1       # CosyVoice TTS
+          voice: longxiaochun
+          sample-rate: 16000
+          format: wav
