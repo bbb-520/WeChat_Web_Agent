@@ -8,6 +8,8 @@ import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -37,6 +39,10 @@ public class BotMetrics {
 
     // ===== 缓存 =====
     private final AtomicInteger pendingImageCount = new AtomicInteger(0);
+
+    // ===== 运行统计 =====
+    private final Instant startTime = Instant.now();
+    private Counter errors;
 
     public BotMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -74,6 +80,10 @@ public class BotMetrics {
                 .description("Total messages processed")
                 .register(registry);
 
+        this.errors = Counter.builder("bot.errors.total")
+                .description("Total processing errors")
+                .register(registry);
+
         // Gauge: 从 AtomicInteger 实时读取缓存条目数
         Gauge.builder("bot.cache.pending-images", pendingImageCount, AtomicInteger::get)
                 .description("Current pending image cache entries")
@@ -107,6 +117,21 @@ public class BotMetrics {
         messagesProcessed.increment();
     }
 
+
+    /** 记录一次处理错误 */
+    public void recordError() {
+        errors.increment();
+    }
+
+    /** 获取运行统计快照 */
+    public Stats getStats() {
+        long uptimeSeconds = Duration.between(startTime, Instant.now()).toSeconds();
+        long hours = uptimeSeconds / 3600;
+        long minutes = (uptimeSeconds % 3600) / 60;
+        long seconds = uptimeSeconds % 60;
+        String uptime = String.format("%d时%d分%d秒", hours, minutes, seconds);
+        return new Stats(uptime, (long) messagesProcessed.count(), (long) errors.count());
+    }
 
     /** 设置缓存条目数（由 ImageCacheManager 调用） */
     public void setPendingImageCount(int count) {
