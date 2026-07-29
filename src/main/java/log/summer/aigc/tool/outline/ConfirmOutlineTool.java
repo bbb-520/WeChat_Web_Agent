@@ -1,6 +1,7 @@
 package log.summer.aigc.tool.outline;
 
 import log.summer.aigc.context.UserContextHolder;
+import log.summer.aigc.entity.DocumentOutline;
 import log.summer.aigc.loop.ActResult;
 import log.summer.aigc.service.IDocumentOutlineService;
 import lombok.RequiredArgsConstructor;
@@ -34,8 +35,9 @@ public class ConfirmOutlineTool {
 
     @Tool(name = "confirmOutline",
           description = "确认或修改文档大纲。用户确认大纲后调用此工具，将大纲状态从DRAFT转为CONFIRMED/MODIFIED。" +
-                        "modifiedOutlineData为可选参数，如果用户有修改意见则传入修改后的大纲JSON。" +
-                        "注意：用户ID由系统自动注入，调用时无需填写。")
+                        "modifiedOutlineData为可选参数，如果用户有修改意见则传入修改后的大纲JSON；" +
+                        "用户只说'确认'/'好的'等肯定词时不要传 modifiedOutlineData。" +
+                        "注意：用户ID由系统自动注入，调用时无需填写。调用成功后必须立即调用 generateDocument。")
     public ActResult confirmOutline(
             @ToolParam(description = "要确认的大纲ID") Long outlineId,
             @ToolParam(description = "修改后的大纲JSON（可选，用户确认无修改时不传）")
@@ -51,18 +53,40 @@ public class ConfirmOutlineTool {
             return ActResult.failure("无法识别当前用户，会话上下文丢失，请重新发起对话");
         }
 
-        boolean updated = outlineService.confirmOutline(outlineId, modifiedOutlineData);
+        // ── NEW: 状态检查门禁 —— 防止 LLM 反复调用 confirmOutline ──
+        DocumentOutline outline = outlineService.getById(outlineId);
+        if (outline == null) {
+            return ActResult.failure("大纲不存在: " + outlineId + "，请重新生成大纲");
+        }
+        String currentStatus = outline.getStatus();
+        if ("CONFIRMED".equals(currentStatus) || "MODIFIED".equals(currentStatus)) {
+            log.info("[CONFIRM-OUTLINE] 大纲已确认，跳过重复调用 → 引导 LLM 进入 generateDocument | outlineId={} | status={}",
+                    outlineId, currentStatus);
+            return ActResult.success(
+                    "大纲已确认（状态: " + currentStatus + "），无需重复确认。" +
+                    "请立即调用 generateDocument 工具生成文档。" +
+                    "参数: type=" + outline.getOutlineType() + ", outlineId=" + outlineId);
+        }
+        // ── END 状态检查门禁 ──
+
+        boolean hasModification = modifiedOutlineData != null && !modifiedOutlineData.isBlank();
+        boolean updated = outlineService.confirmOutline(outlineId, hasModification ? modifiedOutlineData : null);
         if (!updated) {
             log.warn("[CONFIRM-OUTLINE] 确认失败（大纲不存在或版本冲突） | outlineId={} | userId={}",
                     outlineId, userId);
             return ActResult.failure("大纲确认失败：大纲不存在或已被修改，请重新生成大纲");
         }
 
-        String action = (modifiedOutlineData != null && !modifiedOutlineData.isBlank())
-                ? "修改并确认" : "确认";
-        log.info("[CONFIRM-OUTLINE] 大纲已{} | outlineId={} | userId={}",
-                action, outlineId, userId);
+        // 重新查询获取最新状态
+        outline = outlineService.getById(outlineId);
+        String action = hasModification ? "修改并确认" : "确认";
+        log.info("[CONFIRM-OUTLINE] 大纲已{} | outlineId={} | userId={} | newStatus={}",
+                action, outlineId, userId, outline != null ? outline.getStatus() : "?");
 
-        return ActResult.success("大纲已" + action);
+        String docType = outline != null ? outline.getOutlineType() : "WORD";
+        return ActResult.success(
+                "大纲已" + action + "（状态: " + (outline != null ? outline.getStatus() : "CONFIRMED") + "），" +
+                "请立即调用 generateDocument 工具生成文档。" +
+                "参数: type=" + docType + ", outlineId=" + outlineId);
     }
 }
