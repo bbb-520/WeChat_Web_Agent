@@ -1,6 +1,7 @@
 package log.summer.aigc.config;
 
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
+import log.summer.aigc.tool.ToolRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
@@ -8,7 +9,7 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
-import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -53,28 +54,31 @@ public class AiConfig {
     }
 
     /**
-     * ChatClient —— 通义千问 (qwen-plus)，带会话记忆。
+     * ChatClient —— 通义千问 (qwen-plus)。
+     * 不注册 MessageChatMemoryAdvisor——AgentLoop 手动管理 ChatMemory。
      */
     @Bean
-    public ChatClient chatClient(ChatClient.Builder chatClientBuilder,
-                                  MessageChatMemoryAdvisor chatMemoryAdvisor) {
-        log.info("[AI-CONFIG] 构建 ChatClient | model=qwen-plus | advisor=MessageChatMemoryAdvisor");
+    public ChatClient chatClient(ChatClient.Builder chatClientBuilder) {
+        log.info("[AI-CONFIG] 构建 ChatClient | model=qwen-plus | 无默认 Advisor");
         return chatClientBuilder
                 .defaultOptions(DashScopeChatOptions.builder().withModel("qwen-plus").build())
-                .defaultAdvisors(chatMemoryAdvisor)
                 .build();
     }
 
     /**
-     * 工具调用专用 ChatClient —— qwen-turbo，轻量快速，无记忆。
-     * 不设置 temperature/maxTokens，使用模型默认值。
+     * 全局 ToolCallbackProvider —— 注入到 DashScopeChatModel 内部的
+     * DefaultToolCallingManager，使其能找到 @Tool 方法并执行。
+     *
+     * <p>没有这个 Bean，DashScopeChatModel.internalCall() 在 LLM 返回
+     * tool call 后会报 "No ToolCallback found"。</p>
      */
     @Bean
-    @Qualifier("toolChatClient")
-    public ChatClient toolChatClient(ChatClient.Builder builder) {
-        log.info("[AI-CONFIG] 构建 toolChatClient | model=qwen-turbo");
-        return builder
-                .defaultOptions(DashScopeChatOptions.builder().withModel("qwen-turbo").build())
-                .build();
+    public ToolCallbackProvider toolCallbackProvider(ToolRegistry toolRegistry) {
+        // 延迟调用：ToolRegistry 在 ContextRefreshedEvent 后才完成扫描，
+        // 不能在 Bean 创建时捕获 callbacks，必须在每次调用时动态获取。
+        return () -> {
+            var callbacks = toolRegistry.getCallbacks();
+            return callbacks.toArray(new org.springframework.ai.tool.ToolCallback[0]);
+        };
     }
 }

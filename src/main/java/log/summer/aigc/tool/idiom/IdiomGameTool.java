@@ -2,6 +2,7 @@ package log.summer.aigc.tool.idiom;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import log.summer.aigc.context.UserContextHolder;
 import log.summer.aigc.loop.ActResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -96,10 +97,12 @@ public class IdiomGameTool {
      * @param userId 用户 ID（由 LLM 传入）
      * @return 游戏结果
      */
-    @Tool(name = "idiom_game", description = "成语接龙游戏。传入用户输入的文本，工具自动管理游戏状态。支持 /cy start 开始、/cy stop 结束、/cy ls 查看积分、/cy help 帮助，或直接输入四字成语接龙。")
+    @Tool(name = "idiom_game", description = "成语接龙游戏。传入用户输入的文本，工具自动管理游戏状态。支持 /cy start 开始、/cy stop 结束、/cy ls 查看积分、/cy help 帮助，或直接输入四字成语接龙。注意：用户ID由系统自动注入，调用时无需填写。")
     public ActResult idiomGame(
-            @ToolParam(description = "用户输入的文本，可以是命令（/cy start、/cy stop、/cy ls、/cy help）或四字成语") String input,
-            @ToolParam(description = "用户ID") String userId) {
+            @ToolParam(required = true, description = "用户输入的文本，可以是命令（/cy start、/cy stop、/cy ls、/cy help）或四字成语") String input) {
+
+        // BUG FIX: source userId from per-request context instead of LLM-provided parameter.
+        String userId = UserContextHolder.getUserId();
 
         try {
             if (input == null || input.isBlank()) {

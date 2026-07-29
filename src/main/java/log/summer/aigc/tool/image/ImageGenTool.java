@@ -1,5 +1,6 @@
 package log.summer.aigc.tool.image;
 
+import jakarta.annotation.PostConstruct;
 import log.summer.aigc.context.UserContextHolder;
 import log.summer.aigc.loop.ActResult;
 import log.summer.aigc.port.MessageSender;
@@ -34,9 +35,27 @@ public class ImageGenTool {
     private final ImageCacheManager imageCacheManager;
     private final MessageSender messageSender;
 
+    @PostConstruct
+    void init() {
+        log.info("[IMAGE-GEN-TOOL] ✅ 已初始化 | deps: ImageGenService={}, ImageContextManager={}, ImageCacheManager={}, MessageSender={}",
+                imageGenService != null, imageContextManager != null,
+                imageCacheManager != null, messageSender != null);
+    }
+
     @Tool(name = "image_generate", description = "根据文字描述生成图片")
     public ActResult generateImage(
             @ToolParam(description = "图片的文字描述，越详细越好") String prompt) {
+        return doGenerate(prompt);
+    }
+
+    @Tool(name = "draw", description = "根据文字描述生成图片，当用户说'画图/生成图片/画一只小狗'时调用")
+    public ActResult draw(
+            @ToolParam(required = true, description = "图片的文字描述，越详细越好") String prompt) {
+        return doGenerate(prompt);
+    }
+
+    /** Shared implementation for both image_generate and draw. */
+    private ActResult doGenerate(String prompt) {
 
         if (prompt == null || prompt.isBlank()) {
             return ActResult.failure("请提供图片描述文字");

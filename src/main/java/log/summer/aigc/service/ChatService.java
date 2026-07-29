@@ -65,14 +65,39 @@ public class ChatService {
 
     /**
      * 带工具调用的对话 —— AgentLoop Think 阶段使用。
-     * 直接传入消息列表和工具列表，LLM 返回完整 ChatResponse（含 tool calls）。
+     *
+     * <p>关键设计：</p>
+     * <ol>
+     *   <li>设置 {@code internalToolExecutionEnabled = false} —
+     *   阻止 DashScopeChatModel 内部自动执行工具，原始 tool calls
+     *   返回给 AgentLoop 手动执行。</li>
+     *   <li>通过三条通道注入 toolCallbacks：
+     *     <ul>
+     *       <li>{@code .options(options)} — 将 callbacks 传入 DashScope 请求</li>
+     *       <li>{@code .toolCallbacks(tools)} — PromptSpec 级别设置（优先）</li>
+     *       <li>{@code ToolCallbackProvider} Bean — 全局回退解析器</li>
+     *     </ul>
+     *   </li>
+     * </ol>
      */
     public ChatResponse chatWithTools(List<Message> messages, List<ToolCallback> tools) {
         try {
+            // 构建 DashScope 专用选项：禁用内部自动执行 + 注入工具回调
+            var options = DashScopeChatOptions.builder()
+                    .withModel("qwen-plus")
+                    .withInternalToolExecutionEnabled(false)     // 关键：禁止自动执行
+                    .withToolCallbacks(tools)                    // 通过 Builder 注入回调
+                    .build();
+
+            log.debug("[CHAT-SERVICE] chatWithTools | messages={} | tools={} | internalExecEnabled={}",
+                    messages.size(), tools.size(),
+                    options.getInternalToolExecutionEnabled());
+
             return chatClient.prompt()
                     .system(chatSystemPrompt)
                     .messages(messages)
-                    .toolCallbacks(tools)
+                    .options(options)          // 通道1：通过 ChatOptions
+                    .toolCallbacks(tools)      // 通道2：通过 PromptSpec（优先于 options）
                     .call()
                     .chatResponse();
         } catch (AIServiceException e) {

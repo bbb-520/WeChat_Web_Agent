@@ -1,4 +1,4 @@
-package log.summer.bootstrap;
+package log.summer;
 
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;

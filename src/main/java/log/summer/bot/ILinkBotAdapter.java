@@ -148,6 +148,7 @@ public class ILinkBotAdapter implements BotInboundPort, MessageSender {
                         continue;
                     }
                     saveUserMessage(userId, text, "TEXT");
+                    //将用户文本封装成一个标准化的 BotMessage，上下文标记为 TEXT
                     BotMessage botMsg = new BotMessage(userId, text, null, null, null, RouteContext.TEXT);
                     if (!slashInterceptor.intercept(botMsg, this)) {
                         agentLoop.orchestrate(botMsg, this);
@@ -260,23 +261,31 @@ public class ILinkBotAdapter implements BotInboundPort, MessageSender {
     @Override
     public void sendImage(String userId, byte[] imageBytes, String filename, String description) {
         saveBotMessage(userId, description != null ? description : "[图片]", "IMAGE");
-        if (client != null && isRunning) {
-            retrySender.sendWithRetry(userId,
-                    () -> { try { client.sendImage(userId, imageBytes, filename, description); } catch (IOException e) { throw new RuntimeException(e); } },
-                    "图片", filename,
-                    this::sendText);
+        if (client == null || !isRunning) {
+            log.warn("[SEND] 图片发送被跳过（client={}, isRunning={}）| userId={} | file={}",
+                    client != null, isRunning, userId, filename);
+            sendText(userId, "图片发送失败：系统未就绪，请稍后重试");
+            return;
         }
+        retrySender.sendWithRetry(userId,
+                () -> { try { client.sendImage(userId, imageBytes, filename, description); } catch (IOException e) { throw new RuntimeException(e); } },
+                "图片", filename,
+                this::sendText);
     }
 
     @Override
     public void sendFile(String userId, byte[] fileBytes, String filename, String description) {
         saveBotMessage(userId, description != null ? description : "[文件]", "FILE");
-        if (client != null && isRunning) {
-            retrySender.sendWithRetry(userId,
-                    () -> { try { client.sendFile(userId, fileBytes, filename, description); } catch (IOException e) { throw new RuntimeException(e); } },
-                    "文件", filename,
-                    this::sendText);
+        if (client == null || !isRunning) {
+            log.warn("[SEND] 文件发送被跳过（client={}, isRunning={}）| userId={} | file={}",
+                    client != null, isRunning, userId, filename);
+            sendText(userId, "文件发送失败：系统未就绪，请稍后重试");
+            return;
         }
+        retrySender.sendWithRetry(userId,
+                () -> { try { client.sendFile(userId, fileBytes, filename, description); } catch (IOException e) { throw new RuntimeException(e); } },
+                "文件", filename,
+                this::sendText);
     }
 
     // ═══════════════════════════════════════════════════════════════

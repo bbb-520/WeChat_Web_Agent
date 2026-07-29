@@ -28,6 +28,7 @@
         <ilink-sdk.version>2.3.3</ilink-sdk.version>
         <poi.version>5.2.5</poi.version>
         <gson.version>2.10.1</gson.version>
+        <jsonschema-generator.version>4.37.0</jsonschema-generator.version>
     </properties>
 
     <dependencies>
@@ -41,11 +42,21 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- AI: Spring AI Alibaba DashScope -->
+        <!-- AI: Spring AI Alibaba DashScope，排除旧版 jsonschema 依赖 -->
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>
             <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
             <version>${spring-ai-alibaba.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.github.victools</groupId>
+                    <artifactId>jsonschema-generator</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.github.victools</groupId>
+                    <artifactId>jsonschema-module-jackson</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.alibaba</groupId>
@@ -69,6 +80,18 @@
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
             <version>${mybatis-plus.version}</version>
+        </dependency>
+
+        <!-- JSON Schema generation for Spring AI tool parameters（统一版本） -->
+        <dependency>
+            <groupId>com.github.victools</groupId>
+            <artifactId>jsonschema-generator</artifactId>
+            <version>${jsonschema-generator.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.victools</groupId>
+            <artifactId>jsonschema-module-jackson</artifactId>
+            <version>${jsonschema-generator.version}</version>
         </dependency>
 
         <!-- Document parsing: Apache Tika -->
@@ -147,7 +170,7 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <mainClass>log.summer.bootstrap.SummerApplication</mainClass>
+                    <mainClass>log.summer.SummerApplication</mainClass>
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>

@@ -1,38 +1,38 @@
 package log.summer.aigc.tool;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
 import log.summer.aigc.loop.ActResult;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationListener;
+import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
 
 /**
- * Scans the Spring context for beans with {@link Tool @Tool}-annotated methods,
- * builds a combined {@link ToolCallback} list for the LLM, and provides
- * {@link #execute(String, Map)} for {@code AgentLoop} to invoke tools.
+ * 工具注册中心 —— 在所有 Bean 初始化完成后扫描 @Tool 方法。
  *
- * <p>Adapted to Spring AI 1.0.0 GA — uses {@link ToolCallback} (not
- * the M6-era {@code FunctionCallback}) and {@link MethodToolCallbackProvider}
- * for bean scanning.</p>
+ * <p>使用 {@link ContextRefreshedEvent} 替代 {@code @PostConstruct}，
+ * 确保扫描时所有依赖（ImageGenService、TTSEngine 等）已就绪，
+ * 不会因初始化顺序导致工具被静默跳过。</p>
  *
  * @author bbb
  * @since 2026-07-28
  */
 @Slf4j
 @Component
-public class ToolRegistry {
+public class ToolRegistry implements ApplicationListener<ContextRefreshedEvent> {
 
     private final ApplicationContext applicationContext;
     private final ObjectMapper objectMapper;
 
-    private List<ToolCallback> callbacks = List.of();
-    private Map<String, ToolCallback> callbackMap = Map.of();
+    private volatile List<ToolCallback> callbacks = List.of();
+    private volatile Map<String, ToolCallback> callbackMap = Map.of();
+    private volatile boolean scanned = false;
 
     public ToolRegistry(ApplicationContext applicationContext) {
         this.applicationContext = applicationContext;
@@ -40,12 +40,21 @@ public class ToolRegistry {
     }
 
     /**
-     * Scan all beans in the context for {@link Tool @Tool}-annotated methods
-     * and build a combined callback list usable by {@code ChatClient.toolCallbacks()}.
+     * 在 Spring 容器完全刷新后扫描所有 @Tool Bean。
+     * 此时所有单例 Bean 已实例化、依赖已注入、@PostConstruct 已执行。
      */
-    @PostConstruct
-    public void scan() {
+    @Override
+    public void onApplicationEvent(ContextRefreshedEvent event) {
+        // 只在根容器刷新时扫描一次（避免子容器重复触发）
+        if (event.getApplicationContext().getParent() == null && !scanned) {
+            scan();
+            scanned = true;
+        }
+    }
+
+    private void scan() {
         List<Object> toolBeans = new ArrayList<>();
+        List<String> skippedBeans = new ArrayList<>();
 
         for (String beanName : applicationContext.getBeanDefinitionNames()) {
             try {
@@ -53,15 +62,17 @@ public class ToolRegistry {
                 for (var method : bean.getClass().getMethods()) {
                     if (method.isAnnotationPresent(Tool.class)) {
                         toolBeans.add(bean);
-                        break; // one bean may have multiple @Tool methods; add it once
+                        break;
                     }
                 }
             } catch (Exception e) {
-                // Skip beans that cannot be instantiated (e.g. scoped proxies,
-                // lazy beans that fail, or beans in the middle of creation).
-                log.warn("[TOOL-REGISTRY] 跳过无法实例化的 bean | name={} | error={}",
-                        beanName, e.getMessage());
+                skippedBeans.add(beanName + "(" + e.getMessage() + ")");
             }
+        }
+
+        if (!skippedBeans.isEmpty()) {
+            log.warn("[TOOL-REGISTRY] {} 个 bean 无法实例化: {}",
+                    skippedBeans.size(), skippedBeans);
         }
 
         if (!toolBeans.isEmpty()) {
@@ -77,31 +88,15 @@ public class ToolRegistry {
         }
         this.callbackMap = Map.copyOf(map);
 
-        log.info("[TOOL-REGISTRY] Scanned {} tool beans → {} ToolCallbacks",
-                toolBeans.size(), callbacks.size());
+        log.info("[TOOL-REGISTRY] ✅ 扫描完成: {} tool beans → {} ToolCallbacks: {}",
+                toolBeans.size(), callbacks.size(),
+                callbackMap.keySet().stream().sorted().toList());
     }
 
-    /**
-     * Returns all callbacks for injection into the LLM call.
-     */
     public List<ToolCallback> getCallbacks() {
         return callbacks;
     }
 
-    /**
-     * Execute a named tool with the given arguments.
-     * <p>
-     * Arguments are serialized to JSON, passed to {@link ToolCallback#call(String)},
-     * and the raw result string is deserialised back. If the result string is valid
-     * JSON that parses as an {@link ActResult}, it is returned directly; otherwise
-     * it is wrapped in {@link ActResult#success(Object)}.
-     * </p>
-     *
-     * @param toolName  the name of the tool (matches {@code @Tool.name()} or the
-     *                  method name if not explicitly set)
-     * @param arguments the resolved arguments to pass to the tool
-     * @return an ActResult indicating success or failure
-     */
     public ActResult execute(String toolName, Map<String, Object> arguments) {
         ToolCallback callback = callbackMap.get(toolName);
         if (callback == null) {
@@ -112,13 +107,9 @@ public class ToolRegistry {
             String jsonArgs = objectMapper.writeValueAsString(arguments);
             String resultStr = callback.call(jsonArgs);
 
-            // Attempt to deserialize the result string back into an ActResult.
-            // If the tool method returned an ActResult, the serialized JSON
-            // will contain the expected fields.
             try {
                 return objectMapper.readValue(resultStr, ActResult.class);
             } catch (Exception e) {
-                // The result is not an ActResult — wrap it.
                 return ActResult.success(resultStr);
             }
         } catch (Exception e) {

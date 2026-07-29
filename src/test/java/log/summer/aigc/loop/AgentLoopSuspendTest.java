@@ -47,6 +47,8 @@ class AgentLoopSuspendTest {
     private ChatPersistenceService chatPersistenceService;
 
     private ChatMemory chatMemory;
+    private ThinkLoop thinkLoop;
+    private ActLoop actLoop;
     private AgentLoop agentLoop;
 
     @BeforeEach
@@ -55,9 +57,11 @@ class AgentLoopSuspendTest {
                 .chatMemoryRepository(new InMemoryChatMemoryRepository())
                 .maxMessages(20)
                 .build());
+        thinkLoop = new ThinkLoop(chatService, toolRegistry);
+        actLoop = new ActLoop(toolRegistry, argumentResolver);
         agentLoop = new AgentLoop(
-                chatService, toolRegistry, argumentResolver,
-                chatMemory, exceptionHandler, sessionStateManager,
+                thinkLoop, actLoop, chatMemory,
+                exceptionHandler, sessionStateManager,
                 chatPersistenceService);
     }
 

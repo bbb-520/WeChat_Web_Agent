@@ -1,5 +1,6 @@
 package log.summer.aigc.tool.file;
 
+import jakarta.annotation.PostConstruct;
 import log.summer.aigc.loop.ActResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,6 +20,12 @@ import org.springframework.stereotype.Component;
 public class FileTool {
 
     private final FileRecognitionService fileRecognitionService;
+
+    @PostConstruct
+    void init() {
+        log.info("[FILE-TOOL] ✅ 已初始化 | deps: FileRecognitionService={}",
+                fileRecognitionService != null);
+    }
 
     @Tool(name = "file_analyze", description = "分析上传的文件内容")
     public ActResult analyzeFile(
