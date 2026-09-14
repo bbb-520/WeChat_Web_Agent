@@ -1,4 +1,4 @@
-# Summer Bot — 微信 AI 机器人
+# 基于微信和Web双端Agent智能体
 
 > **技术栈:** Spring Boot 3.2 + Java 21 + Spring AI 1.0.0 + DashScope + MySQL
 > **架构:** 双循环 Agent（内循环思考 + 外循环执行）
